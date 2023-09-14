@@ -18,6 +18,8 @@ I built this for my own personal use. It has not been audited by an independent 
 - RLS policies can reference either the JWT (for performance) or the table (for security)
 - Includes a user_role view which allows easy reference of which users have which roles
 - user_role view can be used to delete roles via trigger
+- (Optionally) Users can create their own groups
+- Group owners can add other users to their groups and assign roles
 
 ## Drawbacks
 
@@ -73,21 +75,33 @@ As a security note, `raw_app_meta_data` is stored within the JWTs when a session
   - jwt_is_expired
   - update_user_roles
   - delete_group_users
+  - set_group_owner
+  - add_group_user_by_email
 
 #### Installation via the SQL console
 
-1. Copy the contents of the [migration file](supabase/migrations/20230408004921_implement_rbac.sql) in this repository
+1. Copy the contents of one or more of the [migration files](supabase/migrations/) in this repository
 1. Paste the contents into the SQL console on your supabase dashboard and run it
+1. Optionally, run a diff from your supabase cli to create a migration file capturing these changes
 
 #### Installation via local migration file
 
-If you use the supabase cli and have a local dev environment, you can copy the migration file from this repo into your `supabase/migrations/*` folder and rename it to reflect a more recent timestamp. Note that in order for supabase to apply the migration, it must conform to the `<timestamp>_name.sql` format.
+If you use the supabase cli and have a local dev environment, you can copy the migration files from this repo into your `supabase/migrations/*` folder and rename them to reflect a more recent timestamp. Note that in order for supabase to apply the migrations, they must conform to the `<timestamp>_name.sql` format.
 
 ### Security / RLS
 
 Out of the box, the tables created by this project have RLS enabled and set to reject all operations. This means that group membership and roles can only be assigned and administered by the database administrator/superuser. You may want to modify the RLS policies on the `groups` and `group_users` tables to enable users (such as users with an "admin" role) to modify certain group and role memberships based on their own membership.
 
-One idea is to make use of a trigger to allow any user who creates a group to automatically become the owner/admin of that group. Then, via their owner role, they can add additional users/roles. If you have an interest in this functionality, please open an issue in the tracker and I will provide additional code for this.
+One idea is to make use of [a trigger to allow any user who creates a group to automatically become the owner/admin of that group](supabase/migrations/20230914220613_auto_set_group_owner_on_creation.sql). Then, via their owner role, they can [add additional users/roles](supabase/migrations/20230914231642_allow_owners_to_add_users_to_groups.sql). Note that in order for these to work, you will need to create an RLS policy that allows users to create groups (insert rows into the `groups` table). Here is an example of one such policy which allows any authenticated user to create a new group:
+
+```sql
+create policy "Allow authenticated users to insert"
+on "public"."groups"
+as permissive
+for insert
+to authenticated
+with check (true);
+```
 
 ## How to use
 
