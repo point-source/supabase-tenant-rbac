@@ -103,6 +103,8 @@ to authenticated
 with check (true);
 ```
 
+I've also recently created an invite system built on this and supabase edge functions which allows group owners to generate a token which other users can use to join their group with a specific pre-selected role. I have not yet extensively tested it but if you are interested in this code as well, please open an issue ticket and I'll clean it up and get it added.
+
 ## How to use
 
 1. Create a record in the "groups" table
