@@ -2,6 +2,8 @@
 
 This is a [PostgreSQL TLE](https://github.com/aws/pg_tle) (extension) which attempts to provide a group and role system for supabase projects. You can add it to your database by using the [database.dev](https://database.dev/) tool. It is based off the supabase community [custom claims work done here](https://github.com/supabase-community/supabase-custom-claims).
 
+To install, [visit database.dev](https://database.dev/pointsource/supabase_rbac).
+
 ## Disclaimer
 
 I built this for my own personal use. It has not been audited by an independent security agency nor has it been thouroughly tested beyond my own project. It has been slightly modified for public release so there may be bugs and other pitfalls. I highly encourage users to perform their own inspection of the security of this template. Please submit any issues you find and I will do my best to promptly resolve them. Use at your own risk
