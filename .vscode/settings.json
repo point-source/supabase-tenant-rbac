@@ -1,0 +1,15 @@
+{
+    "Prettier-SQL.SQLFlavourOverride": "postgresql",
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "server": "localhost",
+            "port": 54322,
+            "driver": "PostgreSQL",
+            "name": "Supabase Local",
+            "database": "postgres",
+            "username": "postgres",
+            "password": "postgres"
+        }
+    ]
+}

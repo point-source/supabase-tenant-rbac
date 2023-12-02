@@ -1,6 +1,8 @@
 # Supabase Multi-Tenant Role-based Access Control
 
-This is a template (set of db migrations) which attempts to provide a group and role system for supabase projects. It is based off the supabase community [custom claims work done here](https://github.com/supabase-community/supabase-custom-claims).
+This is a [PostgreSQL TLE](https://github.com/aws/pg_tle) (extension) which attempts to provide a group and role system for supabase projects. You can add it to your database by using the [database.dev](https://database.dev/) tool. It is based off the supabase community [custom claims work done here](https://github.com/supabase-community/supabase-custom-claims).
+
+To install, [visit database.dev](https://database.dev/pointsource/supabase_rbac).
 
 ## Disclaimer
 
@@ -63,7 +65,7 @@ As a security note, `raw_app_meta_data` is stored within the JWTs when a session
 #### Pre-check
 
 - Requires PostgreSQL 15.x (due to use of "security_invoker" on the user_role view)
-- This creates the following tables / views. Make sure they do not collide with existing tables:
+- This creates the following tables / views. Make sure they do not collide with existing tables. (alternatively, specify an alternate schema during creation of the extension):
   - groups
   - group_users
   - user_roles (view)
@@ -78,15 +80,21 @@ As a security note, `raw_app_meta_data` is stored within the JWTs when a session
   - set_group_owner
   - add_group_user_by_email
 
-#### Installation via the SQL console
+#### Installation via dbdev
 
-1. Copy the contents of one or more of the [migration files](supabase/migrations/) in this repository
-1. Paste the contents into the SQL console on your supabase dashboard and run it
-1. Optionally, run a diff from your supabase cli to create a migration file capturing these changes
+1. Make sure you have [dbdev package manager](https://supabase.github.io/dbdev/install-in-db-client/#use) installed
+2. Run `select dbdev.install(<extension_name>);` in your SQL console to install the rbac plugin
+3. Create the extension by running one of the following:
 
-#### Installation via local migration file
+```sql
+create extension "pointsource-supabase_rbac";
+```
 
-If you use the supabase cli and have a local dev environment, you can copy the migration files from this repo into your `supabase/migrations/*` folder and rename them to reflect a more recent timestamp. Note that in order for supabase to apply the migrations, they must conform to the `<timestamp>_name.sql` format.
+or, if you want to specify a schema or version:
+
+```sql
+create extension "pointsource-supabase_rbac" schema "my_schema_name" version "0.0.1";
+```
 
 ### Security / RLS
 
