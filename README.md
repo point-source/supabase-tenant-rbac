@@ -25,11 +25,12 @@ I built this for my own personal use. It has not been audited by an independent 
 
 ## Drawbacks
 
-As with the original [custom-claims repository](https://github.com/supabase-community/supabase-custom-claims), this also suffers from the [JWT token refresh issue](https://github.com/supabase-community/supabase-custom-claims#what-are-the-drawbacks-to-using-custom-claims). Put simply, when a user's group or role is changed, there is (currently) no performant way to force an active session token to refresh. This means that the user will continue to have their old group/role assignments until the session expires.
+As with the original [custom-claims repository](https://github.com/supabase-community/supabase-custom-claims), this also suffers from the [JWT token refresh issue](https://github.com/supabase-community/supabase-custom-claims#what-are-the-drawbacks-to-using-custom-claims). Put simply, when a user's group or role is changed, there is (currently) no performant way to force an active session token to refresh. This means that the JWT on the client side will continue to have their old group/role assignments until the session expires.
 
-This particular project can be made to work around this a couple of ways:
+This project provides the following ways to mitigate this issue:
 
-- Use the non-jwt functions which access the roles table directly (this is less performant because it adds an extra table query to every RBAC-enabled RLS query)
+- Make use of [Postgrest's db-pre-request hook](https://github.com/burggraf/postgrest-request-processing/tree/main) to refresh the user's claims for each request. This ensures that the claims are always up to date and only adds a single row lookup to each request rather than each row of each request. This is the recommended solution as it is a good balance between performance and security. As such, it is enabled by default. Be advised that this will not work if you are using the JWT token directly on the client side. It will also not work if you are bypassing Postgrest and using the JWT directly in your own API which contacts the database directly.
+- Use the non-jwt functions which access the roles table directly (this is less performant because it adds an extra table query to every row of every RBAC-enabled RLS query)
 - Allow users to subscribe to the roles table via realtime and have the client refresh the token when a change is detected
 
 ## Compared to [custom-claims](https://github.com/supabase-community/supabase-custom-claims)
@@ -79,6 +80,7 @@ As a security note, `raw_app_meta_data` is stored within the JWTs when a session
   - delete_group_users
   - set_group_owner
   - add_group_user_by_email
+  - get_req_groups
 
 #### Installation via dbdev
 
@@ -93,7 +95,7 @@ create extension "pointsource-supabase_rbac";
 or, if you want to specify a schema or version:
 
 ```sql
-create extension "pointsource-supabase_rbac" schema "my_schema_name" version "0.0.1";
+create extension "pointsource-supabase_rbac" schema "my_schema_name" version "0.0.2";
 ```
 
 ### Security / RLS
@@ -154,3 +156,10 @@ Required inputs: `group_id` as a uuid, `group_role` as text
 Returns: boolean
 
 This will return true if the `group_role` exists within the `app_meta_data->groups->group_id` field of the JWT token used to perform the request. Executing this function does not perform any database queries as it relies only on the JWT.
+
+#### get_req_groups()
+
+Required inputs: none
+Returns: jsonb
+
+This will return a current/updated list of groups that the user is a member of. This is useful for working around out-of-date JWTs, debugging, and for use in other functions. Executing this function will perform a query against the auth.users table each time it is run but only once if run during a transaction as it is marked as `stable`.
