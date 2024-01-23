@@ -18,7 +18,7 @@ select coalesce(current_setting('request.groups', true), '{}')::jsonb
 $function$;
 
 -- Enable the db_pre_request hook for the authenticator role
-ALTER ROLE authenticator SET pgrst.db_pre_request TO 'public.db_pre_request';
+ALTER ROLE authenticator SET pgrst.db_pre_request TO 'db_pre_request';
 NOTIFY pgrst, 'reload config';
 
 create

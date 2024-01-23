@@ -18,7 +18,7 @@ select coalesce(current_setting('request.groups', true), '{}')::jsonb
 $function$;
 
 -- Enable the db_pre_request hook for the authenticator role
-ALTER ROLE authenticator SET pgrst.db_pre_request TO 'public.db_pre_request';
+ALTER ROLE authenticator SET pgrst.db_pre_request TO 'db_pre_request';
 NOTIFY pgrst, 'reload config';
 
 create
@@ -66,11 +66,11 @@ end;
 $function$;
 
 
-drop policy "Allow group admins to modify" on "public"."sensitive_data";
+drop policy "Allow group admins to modify" on "sensitive_data";
 
-drop policy "Allow group member to read" on "public"."sensitive_data";
+drop policy "Allow group member to read" on "sensitive_data";
 
-create policy "Allow group admins to modify" on "public"."sensitive_data" as permissive for all to authenticated using (
+create policy "Allow group admins to modify" on "sensitive_data" as permissive for all to authenticated using (
     jwt_has_group_role (owned_by_group, 'admin'::text)
 )
 with
@@ -78,6 +78,6 @@ with
         jwt_has_group_role (owned_by_group, 'admin'::text)
     );
 
-create policy "Allow group member to read" on "public"."sensitive_data" as permissive for
+create policy "Allow group member to read" on "sensitive_data" as permissive for
 select
     to authenticated using (jwt_is_group_member (owned_by_group));
