@@ -12,6 +12,7 @@ I built this for my own personal use. It has not been audited by an independent 
 
 - Create groups of users
 - Assign a user to a group
+- Users can be in multiple groups at once
 - Assign a role to the user within a group
 - Users can have multiple roles in a single group
 - Manage group and role assignments through a table
