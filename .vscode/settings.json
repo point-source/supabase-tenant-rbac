@@ -1,15 +1,23 @@
 {
-    "Prettier-SQL.SQLFlavourOverride": "postgresql",
-    "sqltools.connections": [
-        {
-            "previewLimit": 50,
-            "server": "localhost",
-            "port": 54322,
-            "driver": "PostgreSQL",
-            "name": "Supabase Local",
-            "database": "postgres",
-            "username": "postgres",
-            "password": "postgres"
-        }
-    ]
+  "Prettier-SQL.SQLFlavourOverride": "postgresql",
+  "[typescript]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  },
+  "deno.enablePaths": [
+    "supabase/functions"
+  ],
+  "deno.lint": true,
+  "deno.unstable": true,
+  "sqltools.connections": [
+    {
+      "database": "postgres",
+      "driver": "PostgreSQL",
+      "name": "Supabase Local",
+      "password": "postgres",
+      "port": 54322,
+      "previewLimit": 50,
+      "server": "localhost",
+      "username": "postgres"
+    }
+  ]
 }

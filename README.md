@@ -23,6 +23,7 @@ I built this for my own personal use. It has not been audited by an independent 
 - user_role view can be used to delete roles via trigger
 - (Optionally) Users can create their own groups
 - Group owners can add other users to their groups and assign roles
+- Invite system which allows users to create an invite code which can be used to join a group with a specific role
 
 ## Drawbacks
 
@@ -38,7 +39,7 @@ This project provides the following ways to mitigate this issue:
 
 The custom-claims project provides built-in functions for adding and removing generic claims to/from the `raw_app_meta_data` field of the auth.users records. This is highly flexible but is not opinionated about the way groups and roles should be handled.
 
-Additionally, the custom-claims project requires the use of functions for all changes and does not provide the table-based interface that this project employs to maintain claims via trigger.
+Additionally, the custom-claims project requires the use of functions for all changes and does not provide the table-based interface that this project employs to maintain claims via trigger. It also does not include an invitation system.
 
 Overall, these projects are very similar and this one is built on top of the work that was done on the custom-claims project. This is merely an attempt to provide a more opinionated and streamlined solution that can be used by people who are not as familiar with RBAC or SQL functions.
 
@@ -164,3 +165,52 @@ Required inputs: none
 Returns: jsonb
 
 This will return a current/updated list of groups that the user is a member of. This is useful for working around out-of-date JWTs, debugging, and for use in other functions. Executing this function will perform a query against the auth.users table each time it is run but only once if run during a transaction as it is marked as `stable`.
+
+## Setting up the Invitation system
+
+### Initializing the Supabase CLI
+
+If you already have a local dev instance of supabase or if you have already installed, authenticated, and linked the supabase cli for your project, you can skip this section.
+
+1. Install the supabase by following the [getting started guide](https://supabase.com/docs/guides/cli/getting-started)
+1. Set your terminal's current directory to that of your project by running `cd /path/to/your/project`
+1. Initialize the cli by running `supabase init` and following the prompts
+1. Authenticate the cli by running `supabase login` and following the prompts
+1. Link the cli to your project by running `supabase link` and selecting your project
+
+### Create & deploy the edge function
+
+1. Run `supabase functions new invite` to create an empty function named "invite"
+1. Copy the contents of [supabase/functions/invite.js](supabase/functions/invite.js) into the newly created function
+1. Since the invite function validates the user's JWT, you will need to add the JWT secret to the function's environment variables. To do this, run `supabase secrets set SB_JWT_SECRET=<your_supabase_jwt_secret>`. (this can be found in your project settings)
+1. Run `supabase functions deploy invite` to deploy the function to your supabase project
+
+### Using the invitation system
+
+1. Create a new row in the `group_invites` table. You should leave the `user_id` and `accepted_at` fields blank for now.
+1. Copy the `id` field from the newly created row. This is the invite code.
+1. Send the invite code to the user you wish to invite.
+1. When the user accepts the invite, they should send a POST request to `https://<your_supabase_url>/functions/v1/invite/accept`. Here is an example of an equivalent curl request (you should replace the invite code in the query parameter and provide a valid JWT for the Authorization header):
+
+```bash
+curl --request POST 'http://localhost:54321/functions/v1/invite/accept?invite_code=<your_invite_code>' \
+  --header 'Authorization: Bearer USER_JWT_GOES_HERE'
+```
+
+When the function runs, it will validate the JWT of the user calling it and will then update the `user_id` and `accepted_at` fields of the invite record. It will also add the user to the group with the role specified in the `role` field of the invite record.
+
+### Securing the invitation system
+
+Without RLS, anyone can create an invite to a group, even people who are not members of that group. This means people could potentially abuse the invite system to gain access to groups they are not supposed to be in. To prevent this, this package automatically enables a strict RLS policy which prevents all users from creating invites.
+
+In order to enable users to create invites, you can create an RLS policy on the `group_invites` table which only allows users to create invites for groups that they are a member of. Here is an example of a policy which only allows users who have the `admin` role to create/read/update/delete invites for groups that they are a member of:
+
+```sql
+create policy "Enable CRUD for group admins"
+on "group_invites"
+as permissive
+for all
+to public
+using (has_group_role(auth.uid(), "groupId", 'admin'::text))
+with check (has_group_role(auth.uid(), "groupId", 'admin'::text));
+```
