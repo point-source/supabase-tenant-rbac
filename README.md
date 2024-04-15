@@ -159,12 +159,12 @@ Returns: boolean
 
 This will return true if the `group_role` exists within the `app_meta_data->groups->group_id` field of the JWT token used to perform the request. Executing this function does not perform any database queries as it relies only on the JWT.
 
-#### get_req_groups()
+#### get_user_claims()
 
 Required inputs: none
 Returns: jsonb
 
-This will return a current/updated list of groups that the user is a member of. This is useful for working around out-of-date JWTs, debugging, and for use in other functions. Executing this function will perform a query against the auth.users table each time it is run but only once if run during a transaction as it is marked as `stable`.
+This will attempt to return the contents of `request.groups` (populated by the db_pre_request hook) which contains the user's group and role information. If `request.groups` is null, it will fallback to returning the contents of `app_meta_data->>groups` from the JWT. If neither are available, it will return an empty jsonb object.
 
 ## Setting up the Invitation system
 
