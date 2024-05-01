@@ -62,6 +62,7 @@ app.post("/invite/accept", function (request, response, next) {
         SUPABASE_URL,
         SUPABASE_SERVICE_ROLE_KEY,
       );
+
       const res = await supabase.from("group_invites")
         .update({
           user_id: user.sub,
@@ -70,7 +71,7 @@ app.post("/invite/accept", function (request, response, next) {
         .eq("id", invite_code)
         .is("user_id", null)
         .is("accepted_at", null)
-        .select("id, group_id, role");
+        .select("id, group_id, roles");
 
       if (res.error != null || res.data[0] == null) {
         console.log(
@@ -81,18 +82,29 @@ app.post("/invite/accept", function (request, response, next) {
         return response.setStatus(500).send("Invalid invite code");
       }
 
-      const group_user = {
+      const group_users = res.data[0].roles.map((role: string) => ({
         user_id: user.sub,
         group_id: res.data[0].group_id,
-        role: res.data[0].role,
-      };
+        role: role,
+      }));
 
-      const res2 = await supabase.from("group_users").insert(group_user);
+      if (group_users.length == 0) {
+        console.log(`No roles assigned for invite code: ${invite_code}.`);
+        return response.setStatus(500).send(
+          "No roles assigned for invite code",
+        );
+      }
+
+      const res2 = await supabase.from("group_users")
+        .upsert(group_users, {
+          onConflict: "group_id,user_id,role",
+          ignoreDuplicates: true,
+        });
 
       if (res2.error != null) {
         console.log(
           `Error adding user to group: ${res2.error?.message || "none"}.`,
-          `Data: ${JSON.stringify(group_user)}`,
+          `Data: ${JSON.stringify(group_users)}`,
         );
         return response.setStatus(500).send("Error adding user to group");
       } else {

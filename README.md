@@ -97,7 +97,7 @@ create extension "pointsource-supabase_rbac";
 or, if you want to specify a schema or version:
 
 ```sql
-create extension "pointsource-supabase_rbac" schema "my_schema_name" version "0.0.2";
+create extension "pointsource-supabase_rbac" schema "my_schema_name" version "1.0.0";
 ```
 
 ### Security / RLS

@@ -18,7 +18,7 @@ create table
   "group_invites" (
     "id" uuid not null default uuid_generate_v4 (),
     "group_id" uuid not null,
-    "role" text not null,
+    "roles" text[] not null default '{}'::text[] check (cardinality(roles) > 0),
     "invited_by" uuid not null,
     "created_at" timestamp with time zone not null default now(),
     "user_id" uuid,
