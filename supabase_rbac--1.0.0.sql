@@ -16,7 +16,7 @@ create table
 
 create table
   "group_invites" (
-    "id" uuid not null default uuid_generate_v4 (),
+    "id" uuid not null default gen_random_uuid (),
     "group_id" uuid not null,
     "roles" text[] not null default '{}'::text[] check (cardinality(roles) > 0),
     "invited_by" uuid not null,
@@ -90,20 +90,22 @@ FROM
   );
 
 CREATE
-OR REPLACE FUNCTION delete_group_users () RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN
-    DELETE from format('%I.group_users', current_schema()) WHERE id = OLD.id;
+OR REPLACE FUNCTION @extschema@.delete_group_users () RETURNS trigger LANGUAGE plpgsql 
+set
+  search_path = @extschema@ as $function$
+BEGIN
+    DELETE from group_users WHERE id = OLD.id;
     RETURN NULL;
 END;
 $function$;
 
 create
-or replace function db_pre_request () returns void language plpgsql stable security definer as $function$
+or REPLACE FUNCTION @extschema@.db_pre_request () returns void language plpgsql stable security definer
+set
+  search_path = @extschema@ as $function$
 declare
     groups jsonb;
 begin
-    -- Set the search_path to the specific schema and 'public'
-    EXECUTE 'SET search_path = ' || quote_ident(current_schema()) || ', public';
-
     -- get current groups from auth.users
     select raw_app_meta_data->'groups' from auth.users into groups where id = auth.uid();
     -- store it in the request object
@@ -112,12 +114,16 @@ end;
 $function$;
 
 create
-or replace function get_user_claims () returns jsonb language sql stable as $function$ 
+or replace function @extschema@.get_user_claims () returns jsonb language sql stable 
+set
+  search_path = @extschema@ as $function$
 select coalesce(current_setting('request.groups', true)::jsonb, auth.jwt()->'app_metadata'->'groups')::jsonb
 $function$;
 
 create
-or replace function user_has_group_role (group_id uuid, group_role text) returns boolean language plpgsql stable as $function$
+or replace function @extschema@.user_has_group_role (group_id uuid, group_role text) returns boolean language plpgsql stable 
+set
+  search_path = @extschema@ as $function$
 declare retval bool;
 begin
     if auth.role() = 'authenticated' then
@@ -139,7 +145,9 @@ end;
 $function$;
 
 create
-or replace function user_is_group_member (group_id uuid) returns boolean language plpgsql stable as $function$
+or replace function @extschema@.user_is_group_member (group_id uuid) returns boolean language plpgsql stable 
+set
+  search_path = @extschema@ as $function$
 declare retval bool;
 begin
     if auth.role() = 'authenticated' then
@@ -161,22 +169,24 @@ end;
 $function$;
 
 create
-or replace function jwt_is_expired () returns boolean language plpgsql stable as $function$ begin
+or replace function @extschema@.jwt_is_expired () returns boolean language plpgsql stable 
+set
+  search_path = @extschema@ as $function$
+begin
   return extract(epoch from now()) > coalesce(auth.jwt()->>'exp', '0')::numeric;
 end;
 $function$;
 
 CREATE
-OR REPLACE FUNCTION update_user_roles () RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $function$
+OR REPLACE FUNCTION @extschema@.update_user_roles () RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER
+set
+  search_path = @extschema@ AS $function$
 DECLARE
   _group_id UUID = COALESCE(new.group_id, old.group_id);
   _group_id_old UUID = COALESCE(old.group_id, new.group_id);
   _user_id UUID = COALESCE(new.user_id, old.user_id);
   _user_id_old UUID = COALESCE(old.user_id, new.user_id);
 BEGIN
-  -- Set the search_path to the specific schema and 'public'
-  EXECUTE 'SET search_path = ' || quote_ident(current_schema()) || ', public';
-
   -- Check if user_id or group_id is changed
   IF _group_id IS DISTINCT FROM _group_id_old OR _user_id IS DISTINCT FROM _user_id_old THEN
       RAISE EXCEPTION 'Changing user_id or group_id is not allowed';
@@ -193,7 +203,7 @@ BEGIN
           ARRAY[_group_id::TEXT],
           COALESCE(
             (SELECT JSONB_AGG("role")
-             FROM current_schema().group_users gu
+             FROM group_users gu
              WHERE gu.group_id = _group_id
                AND gu.user_id = _user_id
             ),
@@ -210,33 +220,31 @@ END;
 $function$;
 
 CREATE
-OR REPLACE FUNCTION set_group_owner () RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $function$
+OR REPLACE FUNCTION @extschema@.set_group_owner () RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+set
+  search_path = @extschema@ AS $function$
 	begin
-    -- Set the search_path to the specific schema and 'public'
-    EXECUTE 'SET search_path = ' || quote_ident(current_schema()) || ', public';
-
 		IF auth.uid() IS not NULL THEN 
-		insert into current_schema().group_users(group_id, user_id, role) values(new.id, auth.uid(), 'owner');
+		insert into group_users(group_id, user_id, role) values(new.id, auth.uid(), 'owner');
 		end if;
 		return new;
 	end;
 $function$;
 
 CREATE
-OR REPLACE FUNCTION add_group_user_by_email (user_email text, gid uuid, group_role text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER AS $function$
+OR REPLACE FUNCTION @extschema@.add_group_user_by_email (user_email text, gid uuid, group_role text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER
+set
+  search_path = @extschema@ AS $function$
 	declare
 		uid uuid = auth.uid();
 		recipient_id uuid;
 		new_record_id uuid;
 	BEGIN
-    -- Set the search_path to the specific schema and 'public'
-    EXECUTE 'SET search_path = ' || quote_ident(current_schema()) || ', public';
-
 		if uid is null then
 			raise exception 'not_authorized' using hint = 'You are are not authorized to perform this action';
 		end if;
 	
-		if not exists(select id from current_schema().group_users gu where gu.user_id = uid AND gu.group_id = gid AND gu.role = 'owner') then
+		if not exists(select id from group_users gu where gu.user_id = uid AND gu.group_id = gid AND gu.role = 'owner') then
 			raise exception 'not_authorized' using hint = 'You are are not authorized to perform this action';
 		end if;
 	
@@ -246,7 +254,7 @@ OR REPLACE FUNCTION add_group_user_by_email (user_email text, gid uuid, group_ro
 			raise exception 'failed_to_add_user' using hint = 'User could not be added to group';
 		end if;
 	
-		INSERT INTO current_schema().group_users (group_id, user_id, role) VALUES (gid, recipient_id, group_role) returning id into new_record_id;
+		INSERT INTO group_users (group_id, user_id, role) VALUES (gid, recipient_id, group_role) returning id into new_record_id;
 	
 		return new_record_id;
 	exception

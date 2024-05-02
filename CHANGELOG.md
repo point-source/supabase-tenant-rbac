@@ -9,7 +9,8 @@
 - BREAKING: Invite system now accepts multiple roles in a single invite (fixes #20)
 - Mark remaining read-only methods as stable
 - Use auth.role() to determine authentication type (fixes #15)
-- Set search paths for security definer functions to "public" (fixes #18)
+- Set search paths for security definer functions (fixes #18)
+- Use user-specified schema to determine search paths at time of extension creation (fixes #16)
 
 ## 0.0.4
 
