@@ -225,18 +225,6 @@ BEGIN
 END;
 $function$;
 
-CREATE
-OR REPLACE FUNCTION @extschema@.set_group_owner () RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
-set
-  search_path = @extschema@ AS $function$
-	begin
-		IF auth.uid() IS not NULL THEN 
-		insert into group_users(group_id, user_id, role) values(new.id, auth.uid(), 'owner');
-		end if;
-		return new;
-	end;
-$function$;
-
 -- Enable the db_pre_request hook for the authenticator role
 ALTER ROLE authenticator
 SET
@@ -254,10 +242,6 @@ EXECUTE FUNCTION update_user_roles ();
 
 CREATE TRIGGER on_delete_user INSTEAD OF DELETE ON user_roles FOR EACH ROW
 EXECUTE FUNCTION delete_group_users ();
-
-CREATE TRIGGER on_insert_set_group_owner
-AFTER INSERT ON groups FOR EACH ROW
-EXECUTE FUNCTION set_group_owner ();
 
 alter table "group_users" enable row level security;
 

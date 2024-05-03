@@ -219,50 +219,6 @@ BEGIN
 END;
 $function$;
 
-CREATE
-OR REPLACE FUNCTION @extschema@.set_group_owner () RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
-set
-  search_path = @extschema@ AS $function$
-	begin
-		IF auth.uid() IS not NULL THEN 
-		insert into group_users(group_id, user_id, role) values(new.id, auth.uid(), 'owner');
-		end if;
-		return new;
-	end;
-$function$;
-
-CREATE
-OR REPLACE FUNCTION @extschema@.add_group_user_by_email (user_email text, gid uuid, group_role text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER
-set
-  search_path = @extschema@ AS $function$
-	declare
-		uid uuid = auth.uid();
-		recipient_id uuid;
-		new_record_id uuid;
-	BEGIN
-		if uid is null then
-			raise exception 'not_authorized' using hint = 'You are are not authorized to perform this action';
-		end if;
-	
-		if not exists(select id from group_users gu where gu.user_id = uid AND gu.group_id = gid AND gu.role = 'owner') then
-			raise exception 'not_authorized' using hint = 'You are are not authorized to perform this action';
-		end if;
-	
-		select u.id from auth.users u into recipient_id where u.email = user_email;
-	
-		if recipient_id is null then
-			raise exception 'failed_to_add_user' using hint = 'User could not be added to group';
-		end if;
-	
-		INSERT INTO group_users (group_id, user_id, role) VALUES (gid, recipient_id, group_role) returning id into new_record_id;
-	
-		return new_record_id;
-	exception
-		when unique_violation then
-			raise exception 'failed_to_add_user' using hint = 'User could not be added to group';
-	END;
-$function$;
-
 -- Enable the db_pre_request hook for the authenticator role
 ALTER ROLE authenticator
 SET
@@ -280,10 +236,6 @@ EXECUTE FUNCTION update_user_roles ();
 
 CREATE TRIGGER on_delete_user INSTEAD OF DELETE ON user_roles FOR EACH ROW
 EXECUTE FUNCTION delete_group_users ();
-
-CREATE TRIGGER on_insert_set_group_owner
-AFTER INSERT ON groups FOR EACH ROW
-EXECUTE FUNCTION set_group_owner ();
 
 alter table "group_users" enable row level security;
 
