@@ -18,22 +18,11 @@ I built this for my own personal use. It has not been audited by an independent 
 - Manage group and role assignments through a table
 - Group and role memberships are stored in the group_user table, auth.users table, and JWT
 - Create RLS policies based on the user's assigned group or role
-- RLS policies can reference either the JWT (for performance) or the table (for security)
 - Includes a user_role view which allows easy reference of which users have which roles
 - user_role view can be used to delete roles via trigger
 - (Optionally) Users can create their own groups
 - Group owners can add other users to their groups and assign roles
-- Invite system which allows users to create an invite code which can be used to join a group with a specific role
-
-## Drawbacks
-
-As with the original [custom-claims repository](https://github.com/supabase-community/supabase-custom-claims), this also suffers from the [JWT token refresh issue](https://github.com/supabase-community/supabase-custom-claims#what-are-the-drawbacks-to-using-custom-claims). Put simply, when a user's group or role is changed, there is (currently) no performant way to force an active session token to refresh. This means that the JWT on the client side will continue to have their old group/role assignments until the session expires.
-
-This project provides the following ways to mitigate this issue:
-
-- Make use of [Postgrest's db-pre-request hook](https://github.com/burggraf/postgrest-request-processing/tree/main) to refresh the user's claims for each request. This ensures that the claims are always up to date and only adds a single row lookup to each request rather than each row of each request. This is the recommended solution as it is a good balance between performance and security. As such, it is enabled by default. Be advised that this will not work if you are using the JWT token directly on the client side. It will also not work if you are bypassing Postgrest and using the JWT directly in your own API which contacts the database directly.
-- Use the non-jwt functions which access the roles table directly (this is less performant because it adds an extra table query to every row of every RBAC-enabled RLS query)
-- Allow users to subscribe to the roles table via realtime and have the client refresh the token when a change is detected
+- Invite system which allows users to create an invite code which can be used to join a group with specific roles
 
 ## Compared to [custom-claims](https://github.com/supabase-community/supabase-custom-claims)
 
@@ -41,7 +30,9 @@ The custom-claims project provides built-in functions for adding and removing ge
 
 Additionally, the custom-claims project requires the use of functions for all changes and does not provide the table-based interface that this project employs to maintain claims via trigger. It also does not include an invitation system.
 
-Overall, these projects are very similar and this one is built on top of the work that was done on the custom-claims project. This is merely an attempt to provide a more opinionated and streamlined solution that can be used by people who are not as familiar with RBAC or SQL functions.
+Finally, this project makes use of [pre-request hooks](https://github.com/burggraf/postgrest-request-processing) to ensure that claims are always up to date. This is a more secure solution than the custom-claims project which uses claims cached in the JWT which may be out of date.
+
+Nonetheless, these projects share many similarities and this one is built on top of the work that was done on the custom-claims project. This is merely an attempt to provide a more opinionated, streamlined, and secure-by-default solution that can be used by people who are not as familiar with RBAC or SQL functions.
 
 ## Under the hood
 
@@ -65,7 +56,7 @@ As a security note, `raw_app_meta_data` is stored within the JWTs when a session
 
 ## Installation
 
-#### Pre-check
+### Pre-check
 
 - Requires PostgreSQL 15.x (due to use of "security_invoker" on the user_role view)
 - This creates the following tables / views. Make sure they do not collide with existing tables. (alternatively, specify an alternate schema during creation of the extension):
@@ -73,21 +64,17 @@ As a security note, `raw_app_meta_data` is stored within the JWTs when a session
   - group_users
   - user_roles (view)
 - This creates the following functions. Please check for collisions:
-  - has_group_role
-  - is_group_member
-  - jwt_has_group_role
-  - jwt_is_group_member
+  - user_has_group_role
+  - user_is_group_member
+  - get_user_claims
   - jwt_is_expired
   - update_user_roles
   - delete_group_users
-  - set_group_owner
-  - add_group_user_by_email
-  - get_req_groups
 
-#### Installation via dbdev
+### Installation via dbdev
 
 1. Make sure you have [dbdev package manager](https://supabase.github.io/dbdev/install-in-db-client/#use) installed
-2. Run `select dbdev.install(<extension_name>);` in your SQL console to install the rbac plugin
+2. Run `select dbdev.install('pointsource-supabase_rbac');` in your SQL console to install the rbac plugin
 3. Create the extension by running one of the following:
 
 ```sql
@@ -97,14 +84,17 @@ create extension "pointsource-supabase_rbac";
 or, if you want to specify a schema or version:
 
 ```sql
-create extension "pointsource-supabase_rbac" schema "my_schema_name" version "1.0.0";
+create extension "pointsource-supabase_rbac" schema my_schema version "1.0.0";
 ```
 
 ### Security / RLS
 
 Out of the box, the tables created by this project have RLS enabled and set to reject all operations. This means that group membership and roles can only be assigned and administered by the database administrator/superuser. You may want to modify the RLS policies on the `groups` and `group_users` tables to enable users (such as users with an "admin" role) to modify certain group and role memberships based on their own membership.
 
-One idea is to make use of [a trigger to allow any user who creates a group to automatically become the owner/admin of that group](supabase/migrations/20230914220613_auto_set_group_owner_on_creation.sql). Then, via their owner role, they can [add additional users/roles](supabase/migrations/20230914231642_allow_owners_to_add_users_to_groups.sql). Note that in order for these to work, you will need to create an RLS policy that allows users to create groups (insert rows into the `groups` table). Here is an example of one such policy which allows any authenticated user to create a new group:
+One idea is to make use of [a trigger to allow any user who creates a group to automatically become the owner/admin of that group](examples/auto_group_owner.sql). Then, via their owner role, they can [add additional users/roles by email](examples/add_user_by_email.sql). Note that in order for these to work, you will need to:
+
+1. Modify the examples to match your schema (replace `my_schema_name` with your schema name. If you don't know, it is likely `public`)
+1. Create an RLS policy that allows users to create groups (insert rows into the `groups` table). Here is an example of one such policy which allows any authenticated user to create a new group:
 
 ```sql
 create policy "Allow authenticated users to insert"
@@ -120,44 +110,30 @@ I've also recently created an invite system built on this and supabase edge func
 ## How to use
 
 1. Create a record in the "groups" table
-2. Create a record in the "group_users" table which links to the group and the user via the foreign key columns ("group_id" and "user_id", respectively)
-3. Observe that the respective user record in auth.users has an updated `raw_app_meta_data` field which contains group and role information
-4. (Optional) Use the built-in role checking functions for RLS
+1. Create a record in the "group_users" table which links to the group and the user via the foreign key columns ("group_id" and "user_id", respectively)
+1. Observe that the respective user record in auth.users has an updated `raw_app_meta_data` field which contains group and role information
+1. (Optional) Use the built-in role checking functions for RLS
    - is_group_member
    - has_group_role
    - jwt_is_group_member
    - jwt_has_group_role
-5. (Optional) Check the JWT signature and contents to determine roles on the client-side
+1. (Optional) Check the JWT signature and contents to determine roles on the client-side
 
 ### Built-in functions
 
-#### is_group_member(group_id uuid)
+#### user_is_group_member(group_id uuid)
 
 Required inputs: `group_id` as a uuid
 Returns: boolean
 
 This will return true if the `group_id` exists within the `raw_app_meta_data->groups` field of the user's record in the auth.users table. Executing this function will perform a query against the auth.users table each time it is run.
 
-#### has_group_role(group_id uuid, group_role text)
+#### user_has_group_role(group_id uuid, group_role text)
 
 Required inputs: `group_id` as a uuid, `group_role` as text
 Returns: boolean
 
 This will return true if the `group_role` exists within the `raw_app_meta_data->groups->group_id` array of the user's record in the auth.users table. Executing this function will perform a query against the auth.users table each time it is run.
-
-#### jwt_is_group_member(group_id uuid)
-
-Required inputs: `group_id` as a uuid
-Returns: boolean
-
-This will return true if the `group_id` exists within the `app_meta_data->groups` field of the JWT token used to perform the request. Executing this function does not perform any database queries as it relies only on the JWT.
-
-#### jwt_has_group_role(group_id uuid, group_role text)
-
-Required inputs: `group_id` as a uuid, `group_role` as text
-Returns: boolean
-
-This will return true if the `group_role` exists within the `app_meta_data->groups->group_id` field of the JWT token used to perform the request. Executing this function does not perform any database queries as it relies only on the JWT.
 
 #### get_user_claims()
 
@@ -197,7 +173,7 @@ curl --request POST 'http://localhost:54321/functions/v1/invite/accept?invite_co
   --header 'Authorization: Bearer USER_JWT_GOES_HERE'
 ```
 
-When the function runs, it will validate the JWT of the user calling it and will then update the `user_id` and `accepted_at` fields of the invite record. It will also add the user to the group with the role specified in the `role` field of the invite record.
+When the function runs, it will validate the JWT of the user calling it and will then update the `user_id` and `accepted_at` fields of the invite record. It will also add the user to the group with the roles specified as an array in the `roles` field of the invite record.
 
 ### Securing the invitation system
 

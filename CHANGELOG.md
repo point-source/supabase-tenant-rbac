@@ -7,6 +7,8 @@
 - BREAKING: Rename has_group_role to user_has_group_role
 - BREAKING: Remove jwt methods (primary methods are now performant enough)
 - BREAKING: Invite system now accepts multiple roles in a single invite (fixes #20)
+- BREAKING: Remove set_group_owner and instead provide an example of how to implement it
+- BREAKING: Remove add_group_user_by_email and instead provide an example of how to implement it
 - Mark remaining read-only methods as stable
 - Use auth.role() to determine authentication type (fixes #15)
 - Set search paths for security definer functions (fixes #18)
