@@ -1,14 +1,9 @@
-SELECT
-    pgtle.install_extension (
-        'pointsource-supabase_rbac',
-        '1.0.0',
-        'Supabase Multi-Tenant Role-based Access Control',
-$_pgtle_$
 create table
   "groups" (
     "id" uuid not null default gen_random_uuid (),
     "name" text not null default ''::text,
-    "created_at" timestamp with time zone not null default now()
+    "created_at" timestamp with time zone not null default now(),
+    "updated_at" timestamp with time zone not null default now()
   );
 
 create table
@@ -17,7 +12,8 @@ create table
     "group_id" uuid not null,
     "user_id" uuid not null,
     "role" text not null default ''::text,
-    "created_at" timestamp with time zone default now()
+    "created_at" timestamp with time zone not null default now(),
+    "updated_at" timestamp with time zone not null default now()
   );
 
 create table
@@ -233,6 +229,16 @@ SET
 NOTIFY pgrst,
 'reload config';
 
+create trigger handle_updated_at before
+update
+    on
+    public.groups for each row execute function moddatetime('updated_at');
+
+create trigger handle_updated_at before
+update
+    on
+    public.group_users for each row execute function moddatetime('updated_at');
+
 CREATE TRIGGER on_change_update_user_metadata
 AFTER INSERT
 OR DELETE
@@ -248,8 +254,3 @@ alter table "group_users" enable row level security;
 alter table "groups" enable row level security;
 
 alter table "group_invites" enable row level security;
-$_pgtle_$
-    );
-
-CREATE EXTENSION "pointsource-supabase_rbac" version '1.0.0';
-

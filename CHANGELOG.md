@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.0
+
+- BREAKING: Requires the "moddatetime" extension to be installed prior to installing this extension
+- BREAKING: "created_at" column in groups table is now non-nullable
+- Adds "updated_at" column to groups and group_users tables
+- Adds trigger to automatically update "updated_at" column when a group or group_user record is updated
+- Update control file to specify this as the default version
+
 ## 1.0.0
 
 - BREAKING: Replace get_req_groups with get_user_claims
