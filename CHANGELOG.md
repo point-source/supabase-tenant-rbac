@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.1
+
+- Fixed an issue where impersonating an anonymous user in the supabase studio would appear to grant access to data otherwise restricted by RLS. This issue did not affect real requests in production.
+
 ## 2.0.0
 
 - BREAKING: Requires the "moddatetime" extension to be installed prior to installing this extension

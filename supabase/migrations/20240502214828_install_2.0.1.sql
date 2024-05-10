@@ -1,7 +1,7 @@
 SELECT
   pgtle.install_extension (
     'pointsource-supabase_rbac',
-    '2.0.0',
+    '2.0.1',
     'Supabase Multi-Tenant Role-based Access Control',
     $_pgtle_$
 create table
@@ -132,9 +132,11 @@ create
 or replace function @extschema@.user_has_group_role (group_id uuid, group_role text) returns boolean language plpgsql stable 
 set
   search_path = @extschema@ as $function$
-declare retval bool;
+declare 
+  auth_role text = auth.role();
+  retval bool;
 begin
-    if auth.role() = 'authenticated' then
+    if auth_role = 'authenticated' then
         if jwt_is_expired() then
             raise exception 'invalid_jwt' using hint = 'jwt is expired or missing';
         end if;
@@ -142,10 +144,12 @@ begin
             false
           ) into retval;
         return retval;
+    elsif auth_role = 'anon' then
+        return false;
     else -- not a user session, probably being called from a trigger or something
       if session_user = 'postgres' then
         return true;
-      else
+      else -- such as 'authenticator'
         return false;
       end if;
     end if;
@@ -156,9 +160,11 @@ create
 or replace function @extschema@.user_is_group_member (group_id uuid) returns boolean language plpgsql stable 
 set
   search_path = @extschema@ as $function$
-declare retval bool;
+declare 
+  auth_role text = auth.role();
+  retval bool;
 begin
-    if auth.role() = 'authenticated' then
+    if auth_role = 'authenticated' then
         if jwt_is_expired() then
             raise exception 'invalid_jwt' using hint = 'jwt is expired or missing';
         end if;
@@ -166,10 +172,12 @@ begin
             false
           ) into retval;
         return retval;
+    elsif auth_role = 'anon' then
+        return false;
     else -- not a user session, probably being called from a trigger or something
       if session_user = 'postgres' then
         return true;
-      else
+      else -- such as 'authenticator'
         return false;
       end if;
     end if;
@@ -263,4 +271,4 @@ alter table "group_invites" enable row level security;
 $_pgtle_$
   );
 
-CREATE EXTENSION "pointsource-supabase_rbac" version '2.0.0';
+CREATE EXTENSION "pointsource-supabase_rbac" version '2.0.1';
