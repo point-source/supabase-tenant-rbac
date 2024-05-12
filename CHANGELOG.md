@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.2
+
+- Remove references to "public" schema
+
 ## 2.0.1
 
 - Fixed an issue where impersonating an anonymous user in the supabase studio would appear to grant access to data otherwise restricted by RLS. This issue did not affect real requests in production.
