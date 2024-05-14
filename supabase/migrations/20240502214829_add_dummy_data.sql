@@ -83,12 +83,12 @@ drop policy "Allow group admins to modify" on "sensitive_data";
 
 drop policy "Allow group member to read" on "sensitive_data";
 
-create policy "Allow group admins to modify" on "sensitive_data" as permissive for all to authenticated using (
-    user_has_group_role (owned_by_group, 'admin'::text)
+create policy "Has update permission" on "sensitive_data" as permissive for all to authenticated using (
+    user_has_group_role (owned_by_group, 'group_data.update'::text)
 )
 with
     check (
-        user_has_group_role (owned_by_group, 'admin'::text)
+        user_has_group_role (owned_by_group, 'group_data.update'::text)
     );
 
 create policy "Allow group member to read" on "sensitive_data" as permissive for

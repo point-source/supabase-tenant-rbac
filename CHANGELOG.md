@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.0.0
+
+- BREAKING: Remove "name" column from groups table
+- BREAKING: user_roles view now properly adheres to RLS policies via security invoker (requires Postgres 15+)
+- Add "metadata" column to groups table
+- Add "metadata" column to group_users table
+- Add trigger to keep metadata columns updated when a user record is updated
+- Modify user_roles view to reference metadata columns instead of auth.users table
+- Improve `update_user_roles` performance by eliminating subqueries, updating only the affected roles, and adding the ability to update the record's metadata with the user's email
+- Reorganize example files
+- Update readme links so they work on database.dev
+- Add RLS policy examples to readme
+
 ## 2.0.2
 
 - Remove references to "public" schema

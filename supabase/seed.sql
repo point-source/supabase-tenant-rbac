@@ -59,55 +59,52 @@ VALUES
     );
 
 INSERT INTO
-    public."groups" (id, name, created_at)
+    public."groups" (id, metadata, created_at)
 VALUES
     (
         'ffc83b57-2960-47dc-bdfb-adc9b894c8d9',
-        'RED',
+        '{"name": "RED"}',
         '2024-01-15 11:33:11.949478-08'
     ),
     (
         '088ee15b-da1e-42a4-8af5-c87ae0891cab',
-        'BLUE',
+        '{"name": "BLUE"}',
         '2024-01-15 11:33:18.002604-08'
     ),
     (
         '690b6e42-cb50-47fa-9e47-0d3167a7e125',
-        'GREEN',
+        '{"name": "GREEN"}',
         '2024-01-15 11:33:27.099108-08'
     );
 
-INSERT INTO
-    public.group_users (id, group_id, user_id, "role", created_at)
-VALUES
-    (
-        '9a7c9b00-f96c-4135-8a09-fbc36de27b90',
-        'ffc83b57-2960-47dc-bdfb-adc9b894c8d9',
-        'd55f3b79-9004-4bc4-af5c-7fcc1478345a',
-        'admin',
-        '2024-01-15 11:34:22.487187-08'
-    ),
-    (
-        'fd3c03cd-85f9-4cb0-93f2-52bdc7e6c4df',
-        '088ee15b-da1e-42a4-8af5-c87ae0891cab',
-        'd55f3b79-9004-4bc4-af5c-7fcc1478345a',
-        'viewer',
-        '2024-01-15 11:36:50.966208-08'
-    ),
-    (
-        'a7102f7d-4780-4a49-91b5-35d25f5ae9f2',
-        '088ee15b-da1e-42a4-8af5-c87ae0891cab',
-        '1a01f608-c233-4ad6-966e-cf47ff33ee4f',
-        'admin',
-        '2024-01-15 11:37:06.794894-08'
-    ),
-    (
-        '9d9d254c-2a3e-4405-a6a3-3c0a887fbbc9',
-        '690b6e42-cb50-47fa-9e47-0d3167a7e125',
-        '1a01f608-c233-4ad6-966e-cf47ff33ee4f',
-        'viewer',
-        '2024-01-15 11:37:19.370607-08'
-    );
+INSERT INTO public.group_users (id,group_id,user_id,"role") VALUES
+	 ('52a65b1e-a999-4e3b-b283-ffc2cedac280','ffc83b57-2960-47dc-bdfb-adc9b894c8d9','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group.update'),
+	 ('891560c1-8724-45ce-9ad2-cab9c430e0d5','ffc83b57-2960-47dc-bdfb-adc9b894c8d9','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group.delete'),
+	 ('8d364c18-d74f-48e5-9697-d14bcc5c9c59','ffc83b57-2960-47dc-bdfb-adc9b894c8d9','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group_user.create'),
+	 ('a706772b-efa8-4ea4-ac59-50225dbc2dbf','ffc83b57-2960-47dc-bdfb-adc9b894c8d9','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group_user.read'),
+	 ('faee57f0-466b-451f-9426-1c791fdcad45','ffc83b57-2960-47dc-bdfb-adc9b894c8d9','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group_user.update'),
+	 ('d99a293d-5a99-40e8-8749-c56c5d1d1b9d','ffc83b57-2960-47dc-bdfb-adc9b894c8d9','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group_user.delete'),
+	 ('4cf094ac-c5ba-4c10-98f5-755778416822','ffc83b57-2960-47dc-bdfb-adc9b894c8d9','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group_invite.create'),
+	 ('b37ff4d9-3fd6-491e-9eb9-856cebcfaaf4','088ee15b-da1e-42a4-8af5-c87ae0891cab','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group.update'),
+	 ('0bc61929-edfc-4734-9a53-54500db7ee64','088ee15b-da1e-42a4-8af5-c87ae0891cab','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group.delete'),
+	 ('896539c5-c9d7-4f17-8727-ed070eb13f0b','088ee15b-da1e-42a4-8af5-c87ae0891cab','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group_user.create');
+INSERT INTO public.group_users (id,group_id,user_id,"role") VALUES
+	 ('11e98239-a7cd-4a48-b4cc-48f56be14f67','088ee15b-da1e-42a4-8af5-c87ae0891cab','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group_user.read'),
+	 ('51bb1729-e151-48cc-9ec2-6ed1e52ae3a6','088ee15b-da1e-42a4-8af5-c87ae0891cab','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group_user.update'),
+	 ('34420433-c8f7-46b0-8515-ac973ad2d633','088ee15b-da1e-42a4-8af5-c87ae0891cab','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group_user.delete'),
+	 ('97b49026-68f3-40e0-9fbd-b119504b5251','088ee15b-da1e-42a4-8af5-c87ae0891cab','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group_invite.create'),
+	 ('e15071e4-c8b3-48d9-94dc-e6a44b7851a4','088ee15b-da1e-42a4-8af5-c87ae0891cab','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group_data.create'),
+	 ('146dacd1-f403-4d6c-a739-d52579f7848c','088ee15b-da1e-42a4-8af5-c87ae0891cab','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group_data.read'),
+	 ('12968726-0bee-4b90-a17e-6453cefbe0bd','088ee15b-da1e-42a4-8af5-c87ae0891cab','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group_data.update'),
+	 ('ae6e0e6c-f5df-41dd-ac51-73addf1007aa','088ee15b-da1e-42a4-8af5-c87ae0891cab','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group_data.delete'),
+	 ('63fbbaf6-2dd1-413d-8bb7-d438c1899c14','ffc83b57-2960-47dc-bdfb-adc9b894c8d9','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group_data.create'),
+	 ('3961c179-eccf-4dbb-8bca-e5ad7864b8cc','ffc83b57-2960-47dc-bdfb-adc9b894c8d9','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group_data.read');
+INSERT INTO public.group_users (id,group_id,user_id,"role") VALUES
+	 ('0363dc36-c48e-4c14-a424-ff44378491b9','ffc83b57-2960-47dc-bdfb-adc9b894c8d9','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group_data.update'),
+	 ('59571d02-e69c-4555-8a54-1967dee40f2d','ffc83b57-2960-47dc-bdfb-adc9b894c8d9','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group_data.delete'),
+	 ('b0ea2567-40ab-4ce0-bca1-9d24e27dbce6','088ee15b-da1e-42a4-8af5-c87ae0891cab','d55f3b79-9004-4bc4-af5c-7fcc1478345a','group_data.read'),
+	 ('78397550-d600-40c9-9b54-7e7c85f73bed','690b6e42-cb50-47fa-9e47-0d3167a7e125','1a01f608-c233-4ad6-966e-cf47ff33ee4f','group_data.read');
+
 
 INSERT INTO
     public.sensitive_data (id, "data", created_at, owned_by_group)

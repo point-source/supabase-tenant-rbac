@@ -91,7 +91,7 @@ create extension "pointsource-supabase_rbac" schema my_schema version "1.0.0";
 
 Out of the box, the tables created by this project have RLS enabled and set to reject all operations. This means that group membership and roles can only be assigned and administered by the database administrator/superuser. You may want to modify the RLS policies on the `groups` and `group_users` tables to enable users (such as users with an "admin" role) to modify certain group and role memberships based on their own membership.
 
-One idea is to make use of [a trigger to allow any user who creates a group to automatically become the owner/admin of that group](examples/auto_group_owner.sql). Then, via their owner role, they can [add additional users/roles by email](examples/add_user_by_email.sql). Note that in order for these to work, you will need to:
+One idea is to make use of [a trigger to allow any user who creates a group to automatically become the owner/admin of that group](https://github.com/point-source/supabase-tenant-rbac/tree/main/examples/triggers/auto_group_owner.sql). Then, via their owner role, they can [add additional users/roles by email](https://github.com/point-source/supabase-tenant-rbac/tree/main/examples/functions/add_user_by_email.sql). Note that in order for these to work, you will need to:
 
 1. Modify the examples to match your schema (replace `my_schema_name` with your schema name. If you don't know, it is likely `public`)
 1. Create an RLS policy that allows users to create groups (insert rows into the `groups` table). Here is an example of one such policy which allows any authenticated user to create a new group:
@@ -105,7 +105,7 @@ to authenticated
 with check (true);
 ```
 
-I've also recently created an invite system built on this and supabase edge functions which allows group owners to generate a token which other users can use to join their group with a specific pre-selected role. I have not yet extensively tested it but if you are interested in this code as well, please open an issue ticket and I'll clean it up and get it added.
+If you would like to see more RLS policy examples, check the bottom of this readme.
 
 ## How to use
 
@@ -157,7 +157,7 @@ If you already have a local dev instance of supabase or if you have already inst
 ### Create & deploy the edge function
 
 1. Run `supabase functions new invite` to create an empty function named "invite"
-1. Copy the contents of [supabase/functions/invite.js](supabase/functions/invite.js) into the newly created function
+1. Copy the contents of [supabase/functions/invite.js](https://github.com/point-source/supabase-tenant-rbac/blob/main/supabase/functions/invite/index.ts) into the newly created function
 1. Since the invite function validates the user's JWT, you will need to add the JWT secret to the function's environment variables. To do this, run `supabase secrets set SB_JWT_SECRET=<your_supabase_jwt_secret>`. (this can be found in your project settings)
 1. Run `supabase functions deploy invite` to deploy the function to your supabase project
 
@@ -190,3 +190,47 @@ to public
 using (has_group_role(auth.uid(), "groupId", 'admin'::text))
 with check (has_group_role(auth.uid(), "groupId", 'admin'::text));
 ```
+
+## RLS Policy Examples (continued)
+
+Below are two different strategies for implementing RLS policies based on the user's group and role memberships. They both achieve the same thing from the user's perspective but use different methods to do so from the developer perspective. You may find one more flexible or easier to work with than the other or more suitable for your use case.
+
+### Role-centric Policies
+
+These are policies based around predefined roles or "types of users" rather than permissions. These policies verify _who you are_ rather than _what you have been allowed to do_ in order to determine what is permitted. In this case, we are using the roles `owner`, `admin`, and `viewer`.
+
+- Users with the `owner` role are automatically added to the user that creates the group via a [trigger function](https://github.com/point-source/supabase-tenant-rbac/tree/main/examples/triggers/auto_group_owner.sql). The only additional ability that owners are granted in this example is to delete the group itself. This check is achieved by using the `user_has_group_role(id, 'owner')` function in the RLS policy.
+
+- Users with the `admin` role are granted the ability to add and remove users from the group by assigning roles to them. This role is also automatically assigned to the owner via the [trigger function](https://github.com/point-source/supabase-tenant-rbac/tree/main/examples/triggers/auto_group_owner.sql). This check is achieved by using the `user_has_group_role(id, 'admin')` function in the RLS policy.
+
+- Finally, users with the `viewer` role are granted the ability to view the group and its members but are not allowed to make changes. It is important to note that rather than using a check like `user_has_group_role(id, 'viewer')`, we are instead using `user_is_group_member(id)` since all roles that might be assigned would, at the very least, have viewer permissions. By using this less restrictive check, we can ensure that all users who are members of the group can view the group without incurring the performance penalty of checking for each possible role.
+
+You can [view the full policies here](https://github.com/point-source/supabase-tenant-rbac/tree/main/examples/policies/role_centric.sql).
+
+### Permission-centric Policies
+
+These are policies based around specific permissions that users have been granted. This is often more flexible and granualar than the role-centric policies but also may come with a performance disadvantage since the database function has to iterate through more roles in order to verify permissions. This check is run for each row being accessed. With larger queries, this can become significant. In this example, we are using these permissions:
+
+- `group.update` - Allows users to update a group
+- `group.delete` - Allows users to delete a group
+
+- `group_data.create` - Allows users to create data belonging to the group
+- `group_data.read` - Allows users to view data belonging to the group
+- `group_data.update` - Allows users to update data belonging to the group
+- `group_data.delete` - Allows users to delete data belonging to the group
+
+- `group_user.create` - Allows users to add a user to a group
+- `group_user.read` - Allows users to view the members of a group
+- `group_user.update` - Allows users to update the roles of a user in a group
+- `group_user.delete` - Allows users to remove a user from a group
+- `group_user.invite`\* - Allows users to create an invite for a group
+
+Notice that while most of these permissions seem to follow a naming convention of `{table}.{operation}`, the `group_user.invite` permission does not follow this convention. This is because while there is a group_invite table, this permission ultimately permits users to add group members to a group, albeit via indirect (invite) means. By naming it the way we have, it is more descriptive about what this permission ultimately accomplishes. This is a matter of personal preference and you may choose to name it differently.
+
+Futhermore, the `group_data.*` permissions do not reference any table and are there to serve as general-purpose permissions for RLS policies across multiple tables of data that might be generated or consumed by group members. It is not necessary to create general-purpose permissions like this, but it can be useful if you have a lot of tables that you want to apply the same permissions to.
+
+To improve performance, you can also combine some of these permissions into a single role. For example, if you know that you are frequently assigning all permissions for a certain category to certain users, you can use something like `group_data.all` to represent all of the data permissions at once. This reduces the size of the permissions array for the user who has it. Then, in the RLS policy, you would use something like `user_has_group_role(group_id, 'group_user.all') OR user_has_group_role(group_id, 'group_user.create')` to check for the permission. Make sure to check for combined permissions first, since they are more likely to shortcut the search.
+
+In a future version of this package, I may modify the permissions checking functions to accept multiple roles at once and search more efficiently.
+
+You can [view the full policies here](https://github.com/point-source/supabase-tenant-rbac/tree/main/examples/policies/permission_centric.sql).

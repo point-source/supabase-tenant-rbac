@@ -1,13 +1,13 @@
 SELECT
   pgtle.install_extension (
     'pointsource-supabase_rbac',
-    '2.0.1',
+    '3.0.0',
     'Supabase Multi-Tenant Role-based Access Control',
     $_pgtle_$
 create table
   "groups" (
     "id" uuid not null default gen_random_uuid (),
-    "name" text not null default ''::text,
+    "metadata" jsonb not null default '{}'::jsonb,
     "created_at" timestamp with time zone not null default now(),
     "updated_at" timestamp with time zone not null default now()
   );
@@ -18,6 +18,7 @@ create table
     "group_id" uuid not null,
     "user_id" uuid not null,
     "role" text not null default ''::text,
+    "metadata" jsonb not null default '{}'::jsonb,
     "created_at" timestamp with time zone not null default now(),
     "updated_at" timestamp with time zone not null default now()
   );
@@ -78,24 +79,20 @@ alter table "group_invites" validate constraint "group_invites_user_id_fkey";
 alter table "group_invites" enable row level security;
 
 create or replace view
-  "user_roles"
+  @extschema@."user_roles"
 WITH
   (security_invoker) as
 SELECT
   gu.id,
-  g.name AS group_name,
+  COALESCE((g.metadata ->> 'name'::text), NULL::text) AS group_name,
   gu.role,
-  u.email,
+  COALESCE((gu.metadata ->> 'email'::text), NULL::text) AS email,
   gu.group_id,
   gu.user_id
-FROM
-  (
-    (
-      group_users gu
-      JOIN auth.users u ON ((u.id = gu.user_id))
-    )
-    JOIN "groups" g ON ((g.id = gu.group_id))
-  );
+FROM (
+  group_users gu
+  JOIN groups g ON ((g.id = gu.group_id))
+);
 
 CREATE
 OR REPLACE FUNCTION @extschema@.delete_group_users () RETURNS trigger LANGUAGE plpgsql 
@@ -193,45 +190,102 @@ begin
 end;
 $function$;
 
-CREATE
-OR REPLACE FUNCTION @extschema@.update_user_roles () RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER
-set
-  search_path = @extschema@ AS $function$
+CREATE OR REPLACE FUNCTION @extschema@.update_group_users_email()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO @extschema@
+AS $function$
+BEGIN
+    -- Check if the email was changed or it is a new insertion
+    IF (TG_OP = 'INSERT') OR (TG_OP = 'UPDATE' AND NEW.email IS DISTINCT FROM OLD.email) THEN
+        -- Update the email in the metadata of group_users
+        UPDATE @extschema@.group_users
+        SET metadata = jsonb_set(metadata, '{email}', to_jsonb(NEW.email))
+        WHERE user_id = NEW.id;
+    END IF;
+
+    RETURN NEW;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION @extschema@.update_user_roles()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO @extschema@
+AS $function$
 DECLARE
-  _group_id UUID = COALESCE(new.group_id, old.group_id);
-  _group_id_old UUID = COALESCE(old.group_id, new.group_id);
+  _group_id TEXT = COALESCE(new.group_id, old.group_id)::TEXT;
+  _group_id_old TEXT = COALESCE(old.group_id, new.group_id)::TEXT;
   _user_id UUID = COALESCE(new.user_id, old.user_id);
   _user_id_old UUID = COALESCE(old.user_id, new.user_id);
+  _role TEXT = COALESCE(new.role, old.role);
+  _role_old TEXT = COALESCE(old.role, new.role);
+  _user_email TEXT;
+  _raw_app_meta_data JSONB;
 BEGIN
   -- Check if user_id or group_id is changed
   IF _group_id IS DISTINCT FROM _group_id_old OR _user_id IS DISTINCT FROM _user_id_old THEN
       RAISE EXCEPTION 'Changing user_id or group_id is not allowed';
   END IF;
 
+  -- Fetch current email early to avoid multiple SELECT statements
+  SELECT email, raw_app_meta_data INTO _user_email, _raw_app_meta_data FROM auth.users WHERE id = _user_id;
+  _raw_app_meta_data = coalesce(_raw_app_meta_data, '{}'::jsonb);
+
+  -- Check if the record has been deleted or the role has been changed
+  IF (TG_OP = 'DELETE') OR (TG_OP = 'UPDATE' AND _role IS DISTINCT FROM _role_old) THEN
+    -- Remove role from raw_app_meta_data
+    _raw_app_meta_data = jsonb_set(
+        _raw_app_meta_data,
+        '{groups}',
+        jsonb_strip_nulls(
+            COALESCE(_raw_app_meta_data->'groups', '{}'::jsonb) ||
+            jsonb_build_object(
+                _group_id::text,
+                (
+                    SELECT jsonb_agg(val)
+                    FROM jsonb_array_elements_text(COALESCE(_raw_app_meta_data->'groups'->(_group_id::text), '[]'::jsonb)) AS vals(val)
+                    WHERE val <> _role_old
+                )
+            )
+        )
+    );
+  END IF;
+
+  -- Check if the record has been inserted or the role has been changed
+  IF (TG_OP = 'INSERT') OR (TG_OP = 'UPDATE' AND _role IS DISTINCT FROM _role_old) THEN
+    -- Add role to raw_app_meta_data
+    _raw_app_meta_data = jsonb_set(
+        _raw_app_meta_data,
+        '{groups}',
+        COALESCE(_raw_app_meta_data->'groups', '{}'::jsonb) ||
+        jsonb_build_object(
+            _group_id::text,
+            (
+                SELECT jsonb_agg(DISTINCT val)
+                FROM (
+                    SELECT val
+                    FROM jsonb_array_elements_text(COALESCE(_raw_app_meta_data->'groups'->(_group_id::text), '[]'::jsonb)) AS vals(val)
+                    UNION
+                    SELECT _role
+                ) AS combined_roles(val)
+            )
+        )
+    );
+  END IF;
+
   -- Update raw_app_meta_data in auth.users
   UPDATE auth.users
-  SET raw_app_meta_data = JSONB_SET(
-      raw_app_meta_data,
-      '{groups}',
-      JSONB_STRIP_NULLS(
-        JSONB_SET(
-          COALESCE(raw_app_meta_data->'groups', '{}'::JSONB),
-          ARRAY[_group_id::TEXT],
-          COALESCE(
-            (SELECT JSONB_AGG("role")
-             FROM group_users gu
-             WHERE gu.group_id = _group_id
-               AND gu.user_id = _user_id
-            ),
-            'null'::JSONB
-          )
-        )
-      )
-    )
+  SET raw_app_meta_data = _raw_app_meta_data
   WHERE id = _user_id;
 
+  -- Update email in metadata of the NEW record
+  NEW.metadata = jsonb_set(NEW.metadata, '{email}', to_jsonb(_user_email));
+
   -- Return null (the trigger function requires a return value)
-  RETURN NULL;
+  RETURN NEW;
 END;
 $function$;
 
@@ -246,19 +300,25 @@ NOTIFY pgrst,
 create trigger handle_updated_at before
 update
     on
-    public.groups for each row execute function moddatetime('updated_at');
+    @extschema@.groups for each row execute function moddatetime('updated_at');
 
 create trigger handle_updated_at before
 update
     on
-    public.group_users for each row execute function moddatetime('updated_at');
+    @extschema@.group_users for each row execute function moddatetime('updated_at');
 
 CREATE TRIGGER on_change_update_user_metadata
-AFTER INSERT
+BEFORE INSERT
 OR DELETE
 OR
 UPDATE ON group_users FOR EACH ROW
 EXECUTE FUNCTION update_user_roles ();
+
+CREATE TRIGGER update_group_users_email
+AFTER INSERT OR UPDATE
+ON auth.users
+FOR EACH ROW
+EXECUTE FUNCTION update_group_users_email();
 
 CREATE TRIGGER on_delete_user INSTEAD OF DELETE ON user_roles FOR EACH ROW
 EXECUTE FUNCTION delete_group_users ();
@@ -271,4 +331,4 @@ alter table "group_invites" enable row level security;
 $_pgtle_$
   );
 
-CREATE EXTENSION "pointsource-supabase_rbac" version '2.0.1';
+CREATE EXTENSION "pointsource-supabase_rbac" version '3.0.0';
