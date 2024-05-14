@@ -187,8 +187,8 @@ on "group_invites"
 as permissive
 for all
 to public
-using (has_group_role(auth.uid(), "groupId", 'admin'::text))
-with check (has_group_role(auth.uid(), "groupId", 'admin'::text));
+using (user_has_group_role(auth.uid(), "groupId", 'admin'))
+with check (user_has_group_role(auth.uid(), "groupId", 'admin'));
 ```
 
 ## RLS Policy Examples (continued)
