@@ -18,11 +18,25 @@ I built this for my own personal use. It has not been audited by an independent 
 - Manage group and role assignments through a table
 - Group and role memberships are stored in the group_user table, auth.users table, and JWT
 - Create RLS policies based on the user's assigned group or role
-- Includes a user_role view which allows easy reference of which users have which roles
-- user_role view can be used to delete roles via trigger
 - (Optionally) Users can create their own groups
 - Group owners can add other users to their groups and assign roles
 - Invite system which allows users to create an invite code which can be used to join a group with specific roles
+
+## Compared to [Supabase Custom Claims & RBAC](https://supabase.com/docs/guides/database/postgres/custom-claims-and-role-based-access-control-rbac)
+
+The official supabase solution, using auth hooks, is actually very similar to the way this package used to work prior to version 1.0.0. By storing the claims in the jwt upon jwt generation, the claims are made accessible both server-side and client-side without requiring additional queries just to fetch them per request.
+
+This is great for performance. Unfortunately, it also means that if the claims change after a JWT has been issued, they won't take effect until the active JWT with the old claims expires and gets renewed. This means that if you are trying to revoke someone's access, you can't do it instantly. If you are trying to grant additional permission, the user won't be able to use it until they log out and log back in or until the JWT expires.
+
+This package takes the approach of caching the claims in the user's raw_app_meta_data each time the claims are updated. This field is included in the JWT so it provides the same functionality as the official solution (albeit with a slightly different data structure).
+
+The difference comes in when a query is performed. This library uses the postgrest [db_pre_request](https://github.com/burggraf/postgrest-request-processing) hook to trigger on all incoming api calls to postgrest, fetch the current state of the claims cache (not from the JWT), and inject it into the request context. The included RLS policy convenience functions check this request context first, before falling back to the JWT method.
+
+This means that as long as you are making queries via postgrest or the supabase sdk, you are more secure than the officially provided solution since it will always use the most up-to-date claims. It also means that claim changes take immediate effect for all users of the app. There is a minimal performance impact to this approach because it fetches the claim cache for each request (but not for each row). I have found this impact to be negligible and worth the added security and real-time functionality for my application.
+
+Finally, the official docs guide you on implementing RBAC, but not Multi-Tenant RBAC (as of this writing). This means that while you can assign roles and permissions, it isn't obvious how to have multiple teams/organizations of users that each manage their own roles/permissions within their team/org. My library supports this natively by using groups to organize collections of users and then any number of roles per user, per group. You can use the same dot notation from the official docs to add permissions to this as well. This is documented at the end of this readme and includes [real code examples](https://github.com/point-source/supabase-tenant-rbac?tab=readme-ov-file#rls-policy-examples-continued).
+
+In summary, my package should accomplish everything the official solution does while also adding security, instant applicaiton of changes, more convenient methods to call in RLS policies, and multi-tenant support. I hope that in the future, some of this functionality might be added to the official solution.
 
 ## Compared to [custom-claims](https://github.com/supabase-community/supabase-custom-claims)
 
@@ -36,7 +50,7 @@ Nonetheless, these projects share many similarities and this one is built on top
 
 ## Under the hood
 
-All group and role administration happens in the `groups` and `group_users` tables. The only exception is user role deletion, which can be performed through the `user_roles` view. When a record is inserted or changed in the `group_users` table, a function is triggered which detects the change and updates the corresponding `auth.users` record. Specifically, the `raw_app_meta_data` field is updated with data such as:
+All group and role administration happens in the `groups` and `group_users` tables. When a record is inserted or changed in the `group_users` table, a function is triggered which detects the change and updates the corresponding `auth.users` record. Specifically, the `raw_app_meta_data` field is updated with data such as:
 
 ```json
 {
@@ -62,14 +76,12 @@ As a security note, `raw_app_meta_data` is stored within the JWTs when a session
 - This creates the following tables / views. Make sure they do not collide with existing tables. (alternatively, specify an alternate schema during creation of the extension):
   - groups
   - group_users
-  - user_roles (view)
 - This creates the following functions. Please check for collisions:
   - user_has_group_role
   - user_is_group_member
   - get_user_claims
   - jwt_is_expired
   - update_user_roles
-  - delete_group_users
 
 ### Installation via dbdev
 
@@ -84,7 +96,7 @@ create extension "pointsource-supabase_rbac";
 or, if you want to specify a schema or version:
 
 ```sql
-create extension "pointsource-supabase_rbac" schema my_schema version "1.0.0";
+create extension "pointsource-supabase_rbac" schema my_schema version "4.0.0";
 ```
 
 ### Security / RLS
@@ -105,7 +117,7 @@ to authenticated
 with check (true);
 ```
 
-If you would like to see more RLS policy examples, check the bottom of this readme.
+If you would like to see [more RLS policy examples](https://github.com/point-source/supabase-tenant-rbac?tab=readme-ov-file#rls-policy-examples-continued), check the bottom of this readme.
 
 ## How to use
 

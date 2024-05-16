@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.0.0
+
+- BREAKING: Remove user_roles view
+- BREAKING: Remove delete_group_users function (and trigger on_delete_user)
+- BREAKING: Remove update_group_users_email function (and trigger update_group_users_email)
+- BREAKING: Modify update_user_roles function to remove the ability to update the user's email in metadata
+- Add example view to replace user_roles
+- Add example trigger functions to help keep user data synchronized into the group_users metadata
+- Updated readme and added a section comparing it to the official supabase RBAC solution
+
 ## 3.0.0
 
 - BREAKING: Remove "name" column from groups table
