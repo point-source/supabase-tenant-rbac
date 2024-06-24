@@ -53,7 +53,7 @@ on "public"."groups"
 as permissive
 for delete
 to authenticated
-using (user_has_group_role(id, 'delete'));
+using (user_has_group_role(id, 'group.delete'));
 
 
 create policy "Has update permission"
