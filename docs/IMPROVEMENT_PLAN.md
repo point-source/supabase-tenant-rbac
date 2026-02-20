@@ -80,21 +80,23 @@ Requires creating `supabase_rbac--4.1.0.sql` (full install), `supabase_rbac--4.0
 ## Phase 4: Testing Infrastructure (Issue #1)
 
 ### 4.1 Add pgTAP tests
-- [ ] Install pgTAP via migration: `supabase/migrations/YYYYMMDD_install_pgtap.sql`
-- [ ] Create `tests/` directory
-- [ ] Write test files:
-  - [ ] `tests/test_group_crud.sql` — group creation, metadata, deletion
-  - [ ] `tests/test_role_assignment.sql` — trigger fires, claims updated in auth.users
-  - [ ] `tests/test_permission_checks.sql` — all four auth tier behaviors
-  - [ ] `tests/test_groupless_user.sql` — regression for #37
-  - [ ] `tests/test_user_deletion.sql` — regression for #11
-  - [ ] `tests/test_cascade_delete.sql` — group/user deletion cascades
-  - [ ] `tests/test_invites.sql` — invite creation, acceptance, expiry, duplicate prevention
+- [x] pgTAP is provided automatically by `supabase test db` — no migration needed
+- [x] `supabase/tests/` directory created in Phase 2
+- [x] Test files (46 assertions across 7 files):
+  - [x] `01_groupless_user.test.sql` — regression for #37 (5 tests)
+  - [x] `02_user_deletion.test.sql` — regression for #11 (4 tests)
+  - [x] `03_cascade_delete.test.sql` — group/user deletion cascades, #38 (7 tests)
+  - [x] `04_service_role.test.sql` — all four auth tier behaviors, #39 (6 tests)
+  - [x] `05_role_sync.test.sql` — trigger fires, claims updated in auth.users (8 tests)
+  - [x] `06_invite_expiration.test.sql` — invite expiry and acceptance logic (7 tests)
+  - [x] `07_group_crud.test.sql` — group creation, metadata, moddatetime trigger,
+        deletion, duplicate-invite-acceptance prevention, upsert idempotency (9 tests)
 
 ### 4.2 Add GitHub Actions CI
-- [ ] Create `.github/workflows/test.yml`
-- [ ] Setup: Supabase CLI + local Postgres, run `pg_prove`
-- [ ] Trigger on push to `main` and on PRs targeting `main`
+- [x] Created `.github/workflows/test.yml`
+- [x] Setup: `supabase/setup-cli@v1` + `supabase start` + `supabase test db`
+- [x] Triggers on push to `main` and on PRs targeting `main`
+- [x] Excludes heavy services not needed for DB tests (studio, imgproxy, edge-runtime, vector, inbucket)
 
 ---
 
@@ -121,5 +123,5 @@ Requires creating `supabase_rbac--4.1.0.sql` (full install), `supabase_rbac--4.0
 | Phase 1: Immediate fixes | Complete | No version bump |
 | Phase 2: Extension bug fixes | Complete | v4.1.0 |
 | Phase 3: Security hardening | Complete | v4.2.0 |
-| Phase 4: Testing | Pending | N/A |
+| Phase 4: Testing | Complete | N/A |
 | Phase 5: Documentation | In progress (initial docs created) | N/A |

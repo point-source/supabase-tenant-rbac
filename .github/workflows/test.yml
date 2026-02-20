@@ -1,0 +1,28 @@
+name: Database Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start local Supabase
+        # Exclude services not needed for database testing to speed up startup.
+        # studio/imgproxy: dashboard UI; edge-runtime: Deno functions;
+        # vector: log aggregation; inbucket: fake SMTP.
+        run: supabase start -x studio,imgproxy,edge-runtime,vector,inbucket
+
+      - name: Run pgTAP tests
+        run: supabase test db
