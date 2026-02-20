@@ -9,20 +9,19 @@ This document tracks the phased improvement roadmap for `supabase-tenant-rbac`. 
 These changes apply to examples, docs, and the edge function only.
 
 ### 1.1 Merge PR #36 — Fix role_centric.sql example
-- [ ] **File:** `examples/policies/role_centric.sql:43-49`
-- [ ] **Change:** `for all` → `for select` on the "Members can read" groups policy
-- [ ] **PR:** [#36](https://github.com/point-source/supabase-tenant-rbac/pull/36) is ready to merge
+- [x] **File:** `examples/policies/role_centric.sql:43-49`
+- [x] **Change:** `for all` → `for select` on the "Members can read" groups policy
+- [x] **PR:** [#36](https://github.com/point-source/supabase-tenant-rbac/pull/36) is ready to merge
 
 ### 1.2 Fix JWT logging in edge function
-- [ ] **File:** `supabase/functions/invite/index.ts:56`
-- [ ] **Change:** Remove `${token}` from console.log — raw JWTs must never be logged
-- [ ] **Before:** `console.log(\`User ID could not be retrieved from token: ${token}.\`);`
-- [ ] **After:** `console.log("User ID could not be retrieved from token.");`
+- [x] **File:** `supabase/functions/invite/index.ts:56`
+- [x] **Change:** Remove `${token}` from console.log — raw JWTs must never be logged
 
 ### 1.3 Update edge function dependency versions
-- [ ] **File:** `supabase/functions/invite/index.ts:5-7`
-- [ ] **Change:** Update pinned versions of `opine`, `supabase-js`, and `djwt` to latest stable
-- [ ] Current versions are ~2 years old (opine 2.3.4, supabase-js 2.39.3, djwt v2.8)
+- [x] **File:** `supabase/functions/invite/index.ts:5-7`
+- [x] `opine` — already at latest (2.3.4), no change needed
+- [x] `@supabase/supabase-js` — updated 2.39.3 → 2.97.0
+- [x] `djwt` — updated v2.8 → v3.0.2 (major version; verify API compatibility before deploying)
 
 ---
 
@@ -148,7 +147,7 @@ Requires creating `supabase_rbac--4.1.0.sql` (full install), `supabase_rbac--4.0
 
 | Phase | Status | Version |
 |-------|--------|---------|
-| Phase 1: Immediate fixes | Pending | No version bump |
+| Phase 1: Immediate fixes | Complete | No version bump |
 | Phase 2: Extension bug fixes | Pending | v4.1.0 |
 | Phase 3: Security hardening | Pending | v4.1.0 |
 | Phase 4: Testing | Pending | N/A |

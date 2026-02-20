@@ -44,7 +44,7 @@ with check (true);
 create policy "Members can read"
 on "public"."groups"
 as permissive
-for all
+for select
 to authenticated
 using (user_is_group_member(id));
 

@@ -3,8 +3,8 @@
 // This enables autocomplete, go to definition, etc.
 
 import { json, opine } from "https://deno.land/x/opine@2.3.4/mod.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
-import { verify } from "https://deno.land/x/djwt@v2.8/mod.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.97.0";
+import { verify } from "https://deno.land/x/djwt@v3.0.2/mod.ts";
 
 const env = Deno.env.toObject();
 
@@ -53,7 +53,7 @@ app.post("/invite/accept", function (request, response, next) {
       );
       const user = await verify(token, key);
       if (!user?.sub) {
-        console.log(`User ID could not be retrieved from token: ${token}.`);
+        console.log("User ID could not be retrieved from token.");
         return response.setStatus(500).send("User ID could not be retrieved");
       }
 
