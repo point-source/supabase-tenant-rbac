@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.1.0
+
+- Fix #37: Groupless users no longer crash `get_user_claims()` — `db_pre_request` now stores `'{}'` instead of NULL for users with no group memberships, and `get_user_claims()` handles empty string gracefully via `NULLIF`
+- Fix #11: Deleting a user no longer crashes the `update_user_roles` trigger — the trigger now skips the `auth.users` update when the user no longer exists
+- Fix #38: Added `ON DELETE CASCADE` to all foreign keys on `group_users` and `group_invites` — deleting a group or user now automatically cleans up related rows and propagates metadata cleanup via the existing trigger. **Behavioral change**: previously, deleting a group or user with existing memberships was blocked by a FK violation; after this upgrade, those deletes will cascade automatically. No existing row data is modified by this upgrade.
+- Fix #39: `user_has_group_role` and `user_is_group_member` now return `true` when `auth.role() = 'service_role'`, consistent with service_role bypassing RLS
+- Fix #29: `db_pre_request` is now registered with a schema-qualified name (`@extschema@.db_pre_request`) so custom schema installs resolve the function correctly
+- Add pgTAP regression tests for all fixed bugs (30 tests across 5 test files)
+
 ## 4.0.0
 
 - BREAKING: Remove user_roles view

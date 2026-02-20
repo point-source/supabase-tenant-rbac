@@ -1,9 +1,3 @@
-SELECT
-  pgtle.install_extension (
-    'pointsource-supabase_rbac',
-    '4.0.0',
-    'Supabase Multi-Tenant Role-based Access Control',
-    $_pgtle_$
 create table
   "groups" (
     "id" uuid not null default gen_random_uuid (),
@@ -48,36 +42,43 @@ add constraint "group_pkey" PRIMARY KEY using index "group_pkey";
 alter table "group_users"
 add constraint "group_users_pkey" PRIMARY KEY using index "group_users_pkey";
 
+-- Fix #38: ON DELETE CASCADE so deleting a group removes its memberships
 alter table "group_users"
-add constraint "group_users_group_id_fkey" FOREIGN KEY (group_id) REFERENCES "groups" (id) not valid;
+add constraint "group_users_group_id_fkey" FOREIGN KEY (group_id) REFERENCES "groups" (id) ON DELETE CASCADE not valid;
 
 alter table "group_users" validate constraint "group_users_group_id_fkey";
 
+-- Fix #38: ON DELETE CASCADE so deleting a user removes their memberships
 alter table "group_users"
-add constraint "group_users_user_id_fkey" FOREIGN KEY (user_id) REFERENCES auth.users (id) not valid;
+add constraint "group_users_user_id_fkey" FOREIGN KEY (user_id) REFERENCES auth.users (id) ON DELETE CASCADE not valid;
 
 alter table "group_users" validate constraint "group_users_user_id_fkey";
 
 alter table "group_invites"
 add constraint "group_invites_pkey" PRIMARY KEY using index "group_invites_pkey";
 
+-- Fix #38: ON DELETE CASCADE so deleting an inviter removes their sent invites
 alter table "group_invites"
-add constraint "group_invites_invited_by_fkey" FOREIGN KEY ("invited_by") REFERENCES auth.users (id) not valid;
+add constraint "group_invites_invited_by_fkey" FOREIGN KEY ("invited_by") REFERENCES auth.users (id) ON DELETE CASCADE not valid;
 
 alter table "group_invites" validate constraint "group_invites_invited_by_fkey";
 
+-- Fix #38: ON DELETE CASCADE so deleting a group removes its invites
 alter table "group_invites"
-add constraint "group_invites_group_id_fkey" FOREIGN KEY ("group_id") REFERENCES groups (id) not valid;
+add constraint "group_invites_group_id_fkey" FOREIGN KEY ("group_id") REFERENCES groups (id) ON DELETE CASCADE not valid;
 
 alter table "group_invites" validate constraint "group_invites_group_id_fkey";
 
+-- Fix #38: ON DELETE CASCADE so deleting a user removes their accepted invites
 alter table "group_invites"
-add constraint "group_invites_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES auth.users (id) not valid;
+add constraint "group_invites_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES auth.users (id) ON DELETE CASCADE not valid;
 
 alter table "group_invites" validate constraint "group_invites_user_id_fkey";
 
 alter table "group_invites" enable row level security;
 
+-- Fix #29: schema-qualify the function name so custom-schema installs work
+-- Fix #37: coalesce null groups to '{}' so groupless users don't crash get_user_claims()
 create
 or REPLACE FUNCTION @extschema@.db_pre_request () returns void language plpgsql stable security definer
 set
@@ -87,23 +88,25 @@ declare
 begin
     -- get current groups from auth.users
     select raw_app_meta_data->'groups' from auth.users into groups where id = auth.uid();
-    -- store it in the request object
-    perform set_config('request.groups'::text, groups::text, false /* applies to transaction if true, session if false */);
+    -- store it in the request object; coalesce null to '{}' so groupless users don't crash
+    perform set_config('request.groups'::text, coalesce(groups, '{}')::text, false /* applies to transaction if true, session if false */);
 end;
 $function$;
 
+-- Fix #37: nullif guards against empty string left over in request.groups from old versions
 create
-or replace function @extschema@.get_user_claims () returns jsonb language sql stable 
+or replace function @extschema@.get_user_claims () returns jsonb language sql stable
 set
   search_path = @extschema@ as $function$
-select coalesce(current_setting('request.groups', true)::jsonb, auth.jwt()->'app_metadata'->'groups')::jsonb
+select coalesce(nullif(current_setting('request.groups', true), '')::jsonb, auth.jwt()->'app_metadata'->'groups')::jsonb
 $function$;
 
+-- Fix #39: return true for service_role (consistent with service_role bypassing RLS)
 create
-or replace function @extschema@.user_has_group_role (group_id uuid, group_role text) returns boolean language plpgsql stable 
+or replace function @extschema@.user_has_group_role (group_id uuid, group_role text) returns boolean language plpgsql stable
 set
   search_path = @extschema@ as $function$
-declare 
+declare
   auth_role text = auth.role();
   retval bool;
 begin
@@ -118,7 +121,7 @@ begin
     elsif auth_role = 'anon' then
         return false;
     else -- not a user session, probably being called from a trigger or something
-      if session_user = 'postgres' then
+      if session_user = 'postgres' or auth_role = 'service_role' then
         return true;
       else -- such as 'authenticator'
         return false;
@@ -127,11 +130,12 @@ begin
 end;
 $function$;
 
+-- Fix #39: return true for service_role (consistent with service_role bypassing RLS)
 create
-or replace function @extschema@.user_is_group_member (group_id uuid) returns boolean language plpgsql stable 
+or replace function @extschema@.user_is_group_member (group_id uuid) returns boolean language plpgsql stable
 set
   search_path = @extschema@ as $function$
-declare 
+declare
   auth_role text = auth.role();
   retval bool;
 begin
@@ -146,7 +150,7 @@ begin
     elsif auth_role = 'anon' then
         return false;
     else -- not a user session, probably being called from a trigger or something
-      if session_user = 'postgres' then
+      if session_user = 'postgres' or auth_role = 'service_role' then
         return true;
       else -- such as 'authenticator'
         return false;
@@ -156,7 +160,7 @@ end;
 $function$;
 
 create
-or replace function @extschema@.jwt_is_expired () returns boolean language plpgsql stable 
+or replace function @extschema@.jwt_is_expired () returns boolean language plpgsql stable
 set
   search_path = @extschema@ as $function$
 begin
@@ -182,6 +186,11 @@ BEGIN
   -- Check if user_id or group_id is changed
   IF _group_id IS DISTINCT FROM _group_id_old OR _user_id IS DISTINCT FROM _user_id_old THEN
       RAISE EXCEPTION 'Changing user_id or group_id is not allowed';
+  END IF;
+
+  -- Fix #11: if the user no longer exists (e.g. cascaded delete from auth.users), skip metadata update
+  IF NOT EXISTS (SELECT 1 FROM auth.users WHERE id = _user_id) THEN
+      RETURN OLD;
   END IF;
 
   -- Fetch current raw_app_meta_data
@@ -240,10 +249,10 @@ BEGIN
 END;
 $function$;
 
--- Enable the db_pre_request hook for the authenticator role
+-- Fix #29: schema-qualify so this resolves correctly when installed in a non-public schema
 ALTER ROLE authenticator
 SET
-  pgrst.db_pre_request TO 'db_pre_request';
+  pgrst.db_pre_request TO '@extschema@.db_pre_request';
 
 NOTIFY pgrst,
 'reload config';
@@ -270,7 +279,3 @@ alter table "group_users" enable row level security;
 alter table "groups" enable row level security;
 
 alter table "group_invites" enable row level security;
-$_pgtle_$
-  );
-
-CREATE EXTENSION "pointsource-supabase_rbac" version '4.0.0';

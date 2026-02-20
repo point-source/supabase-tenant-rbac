@@ -30,59 +30,33 @@ These changes apply to examples, docs, and the edge function only.
 Requires creating `supabase_rbac--4.1.0.sql` (full install), `supabase_rbac--4.0.0--4.1.0.sql` (upgrade path), and updating `supabase_rbac.control`.
 
 ### 2.1 Fix groupless user crash (Issue #37) — CRITICAL
-- [ ] **File:** `update_user_roles()` / `get_user_claims()` in new extension version
-- [ ] **Fix in `db_pre_request()`:** Handle NULL groups gracefully:
-  ```sql
-  perform set_config('request.groups'::text, coalesce(groups, '{}')::text, false);
-  ```
-- [ ] **Fix in `get_user_claims()`:** Handle empty string before casting:
-  ```sql
-  select coalesce(nullif(current_setting('request.groups', true), '')::jsonb,
-      auth.jwt()->'app_metadata'->'groups')::jsonb
-  ```
+- [x] `db_pre_request()`: `coalesce(groups, '{}')` stores empty object instead of NULL
+- [x] `get_user_claims()`: `NULLIF(..., '')` prevents empty-string-to-jsonb cast error
 
 ### 2.2 Fix user deletion trigger crash (Issue #11)
-- [ ] **File:** `update_user_roles()` in new extension version
-- [ ] **Fix:** Early return when the target user no longer exists:
-  ```sql
-  IF NOT EXISTS (SELECT 1 FROM auth.users WHERE id = _user_id) THEN
-      RETURN OLD;
-  END IF;
-  ```
+- [x] `update_user_roles()`: early return when user no longer exists in `auth.users`
 
 ### 2.3 Add ON DELETE CASCADE to foreign keys (Issue #38)
-- [ ] **File:** New extension version — alter foreign key constraints
-- [ ] Add `ON DELETE CASCADE` to:
-  - `group_users.group_id` → `groups(id)`
-  - `group_users.user_id` → `auth.users(id)`
-  - `group_invites.group_id` → `groups(id)`
-  - `group_invites.invited_by` → `auth.users(id)`
-  - `group_invites.user_id` → `auth.users(id)`
-- [ ] Note: CASCADE on `group_users.user_id` triggers `update_user_roles`, which will clean up `raw_app_meta_data` — this combined with fix 2.2 handles user deletion cleanly.
+- [x] `group_users.group_id` → `groups(id)` ON DELETE CASCADE
+- [x] `group_users.user_id` → `auth.users(id)` ON DELETE CASCADE
+- [x] `group_invites.group_id` → `groups(id)` ON DELETE CASCADE
+- [x] `group_invites.invited_by` → `auth.users(id)` ON DELETE CASCADE
+- [x] `group_invites.user_id` → `auth.users(id)` ON DELETE CASCADE
 
 ### 2.4 Add service_role support (Issue #39 / PR #40)
-- [ ] **File:** `user_has_group_role()` and `user_is_group_member()` in new extension version
-- [ ] **Fix:** Add service_role check alongside postgres check:
-  ```sql
-  if session_user = 'postgres' OR auth.role() = 'service_role' then
-      return true;
-  end if;
-  ```
-- [ ] **PR:** [#40](https://github.com/point-source/supabase-tenant-rbac/pull/40) is open — review before incorporating
+- [x] `user_has_group_role()`: returns `true` when `auth_role = 'service_role'`
+- [x] `user_is_group_member()`: returns `true` when `auth_role = 'service_role'`
 
 ### 2.5 Fix custom schema `db_pre_request` registration (Issue #29)
-- [ ] **File:** Extension SQL — the `ALTER ROLE authenticator SET pgrst.db_pre_request` line
-- [ ] **Change:** Use schema-qualified name:
-  ```sql
-  ALTER ROLE authenticator SET pgrst.db_pre_request TO '@extschema@.db_pre_request';
-  ```
+- [x] `ALTER ROLE authenticator SET pgrst.db_pre_request TO '@extschema@.db_pre_request'`
 
 ### 2.6 Version bookkeeping
-- [ ] Create `supabase_rbac--4.1.0.sql` — full install script incorporating all fixes
-- [ ] Create `supabase_rbac--4.0.0--4.1.0.sql` — upgrade script with ALTER/REPLACE for changed objects
-- [ ] Update `supabase_rbac.control`: `default_version = '4.1.0'`
-- [ ] Update `supabase/migrations/20240502214828_install_4.0.0.sql` to install 4.1.0
-- [ ] Add v4.1.0 entry to `CHANGELOG.md`
+- [x] Created `supabase_rbac--4.1.0.sql` — full install script
+- [x] Created `supabase_rbac--4.0.0--4.1.0.sql` — upgrade path script
+- [x] Updated `supabase_rbac.control`: `default_version = '4.1.0'`
+- [x] Renamed `supabase/migrations/20240502214828_install_rbac.sql` (dropped version from filename)
+- [x] Added v4.1.0 entry to `CHANGELOG.md`
+- [x] Added pgTAP regression tests (5 files, 30 assertions) in `supabase/tests/`
 
 ---
 
@@ -148,7 +122,7 @@ Requires creating `supabase_rbac--4.1.0.sql` (full install), `supabase_rbac--4.0
 | Phase | Status | Version |
 |-------|--------|---------|
 | Phase 1: Immediate fixes | Complete | No version bump |
-| Phase 2: Extension bug fixes | Pending | v4.1.0 |
+| Phase 2: Extension bug fixes | Complete | v4.1.0 |
 | Phase 3: Security hardening | Pending | v4.1.0 |
 | Phase 4: Testing | Pending | N/A |
 | Phase 5: Documentation | In progress (initial docs created) | N/A |

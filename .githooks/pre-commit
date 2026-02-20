@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Pre-commit hook: regenerate the install_rbac migration whenever the extension
+# control file or any extension SQL file is staged for commit.
+#
+# Setup (one-time per clone): git config core.hooksPath .githooks
+# Or run: tools/setup_hooks.sh
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+CHANGED=$(git diff --cached --name-only)
+
+if echo "$CHANGED" | grep -qE '^supabase_rbac(--[0-9.]+)?\.sql$|^supabase_rbac\.control$'; then
+    echo "Extension files changed — regenerating install_rbac migration..."
+    "$REPO_ROOT/tools/generate_migration.sh"
+    git add "$REPO_ROOT/supabase/migrations/20240502214828_install_rbac.sql"
+    echo "Migration regenerated and staged."
+fi
