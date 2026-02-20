@@ -103,16 +103,16 @@ Requires creating `supabase_rbac--4.1.0.sql` (full install), `supabase_rbac--4.0
 ## Phase 5: Documentation Refresh
 
 ### 5.1 Improve README
-- [ ] Add "Security Considerations" section (role escalation, invite expiry, custom schema)
-- [ ] Add "Troubleshooting" section covering issues #29, #34, #37, #41
-- [ ] Add "Custom Table RLS" example (complete end-to-end for a user-data table)
-- [ ] Fix outdated function references in README (still mentions jwt_has_group_role, is_group_member which were removed in v1.0.0)
-- [ ] Fix example policy in "Securing the invitation system" section (uses old API signature)
+- [x] Add "Security Considerations" section *(Phase 3)*
+- [x] Add "Troubleshooting" section covering issues #29, #34, #37, #41
+- [x] Add "Custom Data Table (End-to-End Example)" under RLS Policy Examples
+- [x] Fix outdated function references *(Phase 3)*
+- [x] Fix example policy in "Securing the invitation system" section *(Phase 3)*
 
 ### 5.2 Keep `docs/` up to date
-- [ ] Update `docs/KNOWN_ISSUES.md` as issues are closed
-- [ ] Update this `docs/IMPROVEMENT_PLAN.md` as phases complete
-- [ ] Update `docs/ARCHITECTURE.md` when extension changes are made
+- [x] `docs/KNOWN_ISSUES.md` — restructured into Fixed / Open / Feature Requests / Support sections; all resolved issues marked with version and ✅
+- [x] `docs/IMPROVEMENT_PLAN.md` — updated throughout all phases
+- [x] `docs/ARCHITECTURE.md` — updated for v4.1.0 (CASCADE FKs, service_role tier, groupless user fix, schema-qualified registration, update_user_roles existence check) and v4.2.0 (expires_at column, invite flow note); added Migration Generator section
 
 ---
 
@@ -124,4 +124,4 @@ Requires creating `supabase_rbac--4.1.0.sql` (full install), `supabase_rbac--4.0
 | Phase 2: Extension bug fixes | Complete | v4.1.0 |
 | Phase 3: Security hardening | Complete | v4.2.0 |
 | Phase 4: Testing | Complete | N/A |
-| Phase 5: Documentation | In progress (initial docs created) | N/A |
+| Phase 5: Documentation | Complete | N/A |

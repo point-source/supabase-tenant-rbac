@@ -43,12 +43,13 @@ An invite code allowing a user to join a group with pre-specified roles.
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | `uuid` | Primary key AND invite code, auto-generated |
-| `group_id` | `uuid` | FK → `groups(id)` |
+| `group_id` | `uuid` | FK → `groups(id)` ON DELETE CASCADE |
 | `roles` | `text[]` | Roles to assign when invite is accepted. Must have ≥1 role. |
-| `invited_by` | `uuid` | FK → `auth.users(id)` |
+| `invited_by` | `uuid` | FK → `auth.users(id)` ON DELETE CASCADE |
 | `created_at` | `timestamptz` | Auto-set on insert |
-| `user_id` | `uuid` | FK → `auth.users(id)`. NULL until accepted. |
+| `user_id` | `uuid` | FK → `auth.users(id)` ON DELETE CASCADE. NULL until accepted. |
 | `accepted_at` | `timestamptz` | NULL until accepted. |
+| `expires_at` | `timestamptz` | *(v4.2.0)* Optional expiry. NULL = never expires. The edge function rejects invites where this is set and in the past. |
 
 ### Claims Storage Format
 
@@ -112,9 +113,11 @@ The `groups` key is managed entirely by this extension. The `provider`/`provider
 
 Reads the current user's `raw_app_meta_data->'groups'` from `auth.users` and stores it in the `request.groups` session config variable. This ensures RLS policies always see the latest group/role data, not potentially stale JWT data.
 
-Registered via:
+*(v4.1.0)* For users with no group memberships, stores `'{}'` instead of `NULL` so that `get_user_claims()` never receives an empty string and crashes.
+
+Registered via (schema-qualified since v4.1.0):
 ```sql
-ALTER ROLE authenticator SET pgrst.db_pre_request TO 'db_pre_request';
+ALTER ROLE authenticator SET pgrst.db_pre_request TO '<schema>.db_pre_request';
 ```
 
 ### `get_user_claims()` → jsonb
@@ -122,7 +125,7 @@ Returns the current user's group/role claims as a JSONB object. Precedence:
 1. `request.groups` (set by `db_pre_request` — freshest, per-request)
 2. `auth.jwt()->'app_metadata'->'groups'` (from JWT — may be stale)
 
-Returns `null` if neither is available (e.g., groupless user, anon user).
+Returns `'{}'::jsonb` for groupless users (not `null` — fixed in v4.1.0).
 
 ### `user_has_group_role(group_id uuid, group_role text)` → boolean
 Checks whether the current user has a specific role in a specific group. Used in RLS policies.
@@ -130,7 +133,7 @@ Checks whether the current user has a specific role in a specific group. Used in
 **Auth tier logic:**
 - `authenticated` role: validates JWT not expired, checks claims
 - `anon` role: always `false`
-- `session_user = 'postgres'` (triggers, superuser): always `true`
+- `session_user = 'postgres'` or `auth_role = 'service_role'` *(v4.1.0)*: always `true`
 - anything else (e.g., `authenticator`): always `false`
 
 ### `user_is_group_member(group_id uuid)` → boolean
@@ -148,6 +151,8 @@ Incrementally updates `auth.users.raw_app_meta_data` when group membership chang
 - **UPDATE**: removes old role, adds new role (role change)
 
 Enforces that `user_id` and `group_id` cannot be changed on existing rows (raises exception).
+
+*(v4.1.0)* Skips the `auth.users` update if the user no longer exists (handles cascaded deletes from `auth.users`).
 
 ---
 
@@ -210,8 +215,8 @@ RLS checks: `user_has_group_role(group_id, 'group_data.read')`
 
 **Notes:**
 - An invite can only be accepted once (`user_id IS NULL AND accepted_at IS NULL` check)
-- Invites do not expire (no expiration column currently — see KNOWN_ISSUES.md)
-- Any authenticated user who obtains a valid invite code UUID can accept it
+- *(v4.2.0)* Invites can optionally expire via the `expires_at` column. `NULL` means the invite never expires. The edge function rejects invites with a past `expires_at`.
+- Any authenticated user who obtains a valid invite code UUID can accept it (RLS governs who can *create* invites, not who can *use* them)
 
 ---
 
@@ -234,3 +239,11 @@ The extension follows standard PostgreSQL TLE conventions:
 - **Full install scripts**: `supabase_rbac--X.Y.Z.sql` for fresh installs
 - **Upgrade scripts**: `supabase_rbac--A--B.sql` for in-place upgrades via `ALTER EXTENSION ... UPDATE TO`
 - Distributed on [database.dev](https://database.dev/pointsource/supabase_rbac)
+
+### Migration Generator
+
+The Supabase migration file (`supabase/migrations/20240502214828_install_rbac.sql`) is generated automatically from the canonical extension SQL file. The `default_version` in `supabase_rbac.control` is the single source of truth for which version the migration installs.
+
+- **`tools/generate_migration.sh`**: reads the version from the control file, wraps the matching `supabase_rbac--X.Y.Z.sql` in `pgtle.install_extension()` boilerplate, and writes the migration. No-op if the migration is already current.
+- **Git pre-commit hook** (`.githooks/pre-commit`): runs the generator automatically when extension files are staged. One-time setup: `tools/setup_hooks.sh`.
+- **Claude PostToolUse hook** (`.claude/settings.json`): runs the generator after any Write/Edit to extension SQL or the control file, keeping the migration in sync during AI-assisted development.

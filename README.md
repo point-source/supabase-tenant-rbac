@@ -262,3 +262,104 @@ To improve performance, you can also combine some of these permissions into a si
 In a future version of this package, I may modify the permissions checking functions to accept multiple roles at once and search more efficiently.
 
 You can [view the full policies here](https://github.com/point-source/supabase-tenant-rbac/tree/main/examples/policies/permission_centric.sql).
+
+### Custom Data Table (End-to-End Example)
+
+The most common real-world use case: you have a table that belongs to a group and you want different access levels for members vs. admins. Here is a complete example for a `posts` table.
+
+**Step 1: Create the table with a `group_id` foreign key**
+
+```sql
+create table "public"."posts" (
+  "id"         uuid not null default gen_random_uuid(),
+  "group_id"   uuid not null references "groups"(id) on delete cascade,
+  "title"      text not null,
+  "body"       text not null default '',
+  "created_at" timestamptz not null default now()
+);
+
+alter table "public"."posts" enable row level security;
+grant select, insert, update, delete on "public"."posts" to authenticated;
+```
+
+**Step 2: Add RLS policies**
+
+```sql
+-- Any group member can read posts belonging to their group.
+-- user_is_group_member is preferred here over user_has_group_role because all
+-- roles (viewer, editor, admin, …) grant at minimum read access.
+create policy "Group members can read"
+on "public"."posts" as permissive for select to authenticated
+using (user_is_group_member(group_id));
+
+-- Only members with the editor role can create posts.
+create policy "Editors can create"
+on "public"."posts" as permissive for insert to authenticated
+with check (user_has_group_role(group_id, 'editor'));
+
+-- Only members with the editor role can update posts.
+create policy "Editors can update"
+on "public"."posts" as permissive for update to authenticated
+using  (user_has_group_role(group_id, 'editor'))
+with check (user_has_group_role(group_id, 'editor'));
+
+-- Only group admins can delete posts.
+create policy "Admins can delete"
+on "public"."posts" as permissive for delete to authenticated
+using (user_has_group_role(group_id, 'admin'));
+```
+
+The key pattern: pass the row's `group_id` column directly to `user_is_group_member` or `user_has_group_role`. The function reads the current user's claims from the request context and checks whether they have membership/the specified role in that group.
+
+If you are using permission-centric roles (e.g. `post.create`, `post.delete`), substitute those strings for `'editor'` and `'admin'` above. See [#33](https://github.com/point-source/supabase-tenant-rbac/issues/33) for more discussion.
+
+## Troubleshooting
+
+### Groupless users receive a 500 error on every API request
+
+**Symptom:** Newly signed-up users who have not been added to any group receive a 500 error for every PostgREST API request. Supabase logs show `invalid input syntax for type json`.
+
+**Cause:** Bug in versions before v4.1.0. See [issue #37](https://github.com/point-source/supabase-tenant-rbac/issues/37). When a user has no group memberships, `db_pre_request` stored an empty string in `request.groups`, which `get_user_claims()` then tried to cast as `jsonb`.
+
+**Fix:** Upgrade to v4.1.0 or later:
+
+```sql
+alter extension "pointsource-supabase_rbac" update to '4.1.0';
+```
+
+If you cannot upgrade immediately, ensure all users are added to at least one group right after signup — for example via a trigger on `auth.users`.
+
+---
+
+### `db_pre_request` not found when installed in a custom schema
+
+**Symptom:** After installing with `create extension "pointsource-supabase_rbac" schema my_schema`, every PostgREST request fails with a function-not-found error.
+
+**Cause:** Bug in versions before v4.1.0. See [issue #29](https://github.com/point-source/supabase-tenant-rbac/issues/29). The `pgrst.db_pre_request` role setting was registered without a schema prefix, so PostgREST could not locate the function in a non-`public` schema.
+
+**Fix:** Upgrade to v4.1.0 or later. If upgrading is not immediately possible, run this manually after installation:
+
+```sql
+alter role authenticator set pgrst.db_pre_request to 'my_schema.db_pre_request';
+notify pgrst, 'reload config';
+```
+
+---
+
+### Storage RLS policies use stale claims after a role change
+
+**Symptom:** RLS policies on Supabase Storage objects that call `user_has_group_role()` or `user_is_group_member()` appear to use outdated group memberships for up to an hour after a role change.
+
+**Cause:** The `db_pre_request` hook only fires in the PostgREST pipeline. Supabase Storage routes requests through a separate code path that does not invoke the hook. Storage therefore falls back to JWT claims, which are only refreshed when the user's session token is renewed (default: 1 hour). See [issue #34](https://github.com/point-source/supabase-tenant-rbac/issues/34).
+
+**Workaround:** This is an architectural limitation that cannot be fixed within this extension. For storage access control, accept a staleness window equal to the JWT lifetime. If immediate revocation is critical, use server-side signed URLs or a separate access check rather than storage-level RLS based on group roles.
+
+---
+
+### Project fails to restore after being paused or upgraded
+
+**Symptom:** After a Supabase project is paused and unpaused, or after a Supabase platform upgrade, the project fails to start with an error about `auth.users` not existing when the extension is being installed.
+
+**Cause:** Supabase logical backups do not correctly capture the dependency between the TLE extension and `auth.users`. The extension may be restored before the `auth` schema exists. See [issue #41](https://github.com/point-source/supabase-tenant-rbac/issues/41).
+
+**Workaround:** Contact Supabase support. This is an upstream platform issue; no workaround exists within this extension.

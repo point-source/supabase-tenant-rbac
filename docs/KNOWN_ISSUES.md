@@ -1,158 +1,183 @@
 # Known Issues
 
-This document catalogs all open GitHub issues as of 2025. Issues are grouped by type. See [IMPROVEMENT_PLAN.md](./IMPROVEMENT_PLAN.md) for the phased roadmap that addresses these.
+This document catalogs GitHub issues and their current status. Issues are grouped by type. See [IMPROVEMENT_PLAN.md](./IMPROVEMENT_PLAN.md) for the phased roadmap.
 
 ---
 
-## Bugs
+## Fixed Bugs
 
-### #37 — Groupless users crash `get_user_claims()` (CRITICAL)
+These bugs have been resolved in extension releases. Listed for historical reference and to help users on older versions understand what to upgrade for.
+
+### #37 — Groupless users crash `get_user_claims()` ✅ Fixed in v4.1.0
 **Link:** https://github.com/point-source/supabase-tenant-rbac/issues/37
 
-When a user signs up via Supabase's standard flow and has never been added to any group, `db_pre_request` stores an empty string in `request.groups` (since `raw_app_meta_data->'groups'` is NULL). `get_user_claims()` then tries to cast this empty string as `jsonb`, causing a `invalid input syntax for type json` error. Every API request by a groupless authenticated user returns a 500 error.
+When a user signs up and has never been added to any group, `db_pre_request` stored `NULL` in `request.groups`. `get_user_claims()` cast an empty string to `jsonb`, causing a parse error. Every API request by a groupless user returned 500.
 
-**Impact:** Any Supabase app using standard signup will break for new users until they are added to at least one group.
-
-**Workaround:** Ensure all users are added to at least one group immediately after signup (e.g., via a trigger on `auth.users`).
-
-**Fix (v4.1.0):**
-- In `db_pre_request()`: `coalesce(groups, '{}')` before calling `set_config`
-- In `get_user_claims()`: use `NULLIF(..., '')` before casting to `jsonb`
+**Fix:** `db_pre_request` now stores `'{}'` via `coalesce`. `get_user_claims()` uses `NULLIF(..., '')` to guard against stale empty strings left by older versions.
 
 ---
 
-### #11 — User deletion crashes `update_user_roles` trigger
+### #11 — User deletion crashes `update_user_roles` trigger ✅ Fixed in v4.1.0
 **Link:** https://github.com/point-source/supabase-tenant-rbac/issues/11
 
-Deleting a row from `auth.users` cascades to `group_users` (FK constraint). The `update_user_roles` trigger fires for each deleted `group_users` row, then tries to `UPDATE auth.users WHERE id = _user_id` — but the user was just deleted. This raises an error.
+Deleting a user cascaded to `group_users`, which fired the `update_user_roles` trigger. The trigger then tried to update `auth.users` for a user that no longer existed.
 
-**Impact:** Cannot delete users from Supabase without first manually removing all their `group_users` rows.
-
-**Workaround:** Before deleting a user, manually delete all their `group_users` rows:
-```sql
-DELETE FROM group_users WHERE user_id = '<user-uuid>';
--- Now safe to delete the user
-```
-
-**Fix (v4.1.0):** Add an existence check in `update_user_roles()`:
-```sql
-IF NOT EXISTS (SELECT 1 FROM auth.users WHERE id = _user_id) THEN
-    RETURN OLD;
-END IF;
-```
+**Fix:** The trigger now checks for user existence and returns early if the user is gone.
 
 ---
+
+### #38 — Deleting a group or user blocked by FK constraints ✅ Fixed in v4.1.0
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/38
+
+Previously, deleting a group or user with existing `group_users` / `group_invites` rows was blocked by FK violations. Users had to manually clean up child rows first.
+
+**Fix:** All foreign keys on `group_users` and `group_invites` now have `ON DELETE CASCADE`. **Behavioral change:** deletes now cascade automatically. See CHANGELOG for full details.
+
+---
+
+### #29 — `db_pre_request` not found when installed in a custom schema ✅ Fixed in v4.1.0
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/29
+
+The `pgrst.db_pre_request` role setting was registered without a schema prefix, so PostgREST could not find the function when the extension was in a non-`public` schema.
+
+**Fix:** Registration now uses `@extschema@.db_pre_request` to always resolve correctly.
+
+---
+
+### #35 — Role-centric example uses `FOR ALL` instead of `FOR SELECT` ✅ Fixed in Phase 1
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/35
+
+The "Members can read" policy in `examples/policies/role_centric.sql` incorrectly used `FOR ALL`. Fixed to `FOR SELECT`.
+
+---
+
+### #39 — Permission functions should return `true` for `service_role` ✅ Fixed in v4.1.0
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/39
+
+`user_has_group_role` and `user_is_group_member` returned `false` for `service_role` callers, which was inconsistent with service_role bypassing RLS entirely.
+
+**Fix:** Both functions now return `true` when `auth.role() = 'service_role'`, in addition to the existing `session_user = 'postgres'` check.
+
+---
+
+### #1 — No automated tests ✅ Completed in Phase 4
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/1
+
+There were no automated tests. pgTAP tests have been added in `supabase/tests/` — 7 test files, 46 assertions — and a GitHub Actions CI workflow runs them on every push and PR to `main`.
+
+---
+
+## Open Bugs / Limitations
 
 ### #41 — TLE restoration fails after project pause/upgrade
 **Link:** https://github.com/point-source/supabase-tenant-rbac/issues/41
 
-Supabase logical backups do not correctly capture the dependency between the TLE extension and `auth.users`. When a paused or upgraded project is restored, the extension may be installed before `auth.users` exists, causing the restoration to fail.
+Supabase logical backups do not correctly capture the dependency between the TLE extension and `auth.users`. When a paused or upgraded project is restored, the extension may be installed before `auth.users` exists.
 
-**Impact:** Projects using this extension may fail to restore after being paused or after a Supabase version upgrade.
+**Impact:** Projects may fail to restore after being paused or after a Supabase version upgrade.
 
-**Workaround:** Not well-established. May require manual restoration steps or Supabase support intervention.
+**Workaround:** Contact Supabase support. This is an upstream platform issue.
 
-**Status:** Upstream issue with how Supabase handles TLE restoration ordering. A long-term fix may require changes to how the extension declares its `auth.users` dependency, or a Supabase platform fix.
-
----
-
-### #29 — `db_pre_request` not found when installed in custom schema
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/29
-
-When the extension is installed in a non-`public` schema (e.g., `CREATE EXTENSION ... schema rbac`), the `ALTER ROLE authenticator SET pgrst.db_pre_request TO 'db_pre_request'` line registers an unqualified function name. PostgREST cannot find the function and every API request fails.
-
-**Workaround:** After installing in a custom schema, manually run:
-```sql
-ALTER ROLE authenticator SET pgrst.db_pre_request TO 'your_schema.db_pre_request';
-NOTIFY pgrst, 'reload config';
-```
-
-**Fix (v4.1.0):** Change the registration to use `@extschema@.db_pre_request` instead of `db_pre_request`.
-
----
-
-### #35 / PR #36 — Role-centric example uses `FOR ALL` instead of `FOR SELECT`
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/35
-
-In `examples/policies/role_centric.sql`, the "Members can read" policy on the `groups` table uses `FOR ALL` instead of `FOR SELECT`. The comment says "read" but the policy grants all operations.
-
-**Impact:** Example-only. Does not affect the core extension. Misleading for developers copying the example.
-
-**Fix:** PR #36 is open and ready to merge — changes `for all` to `for select`.
+**Status:** Open. Requires a Supabase platform fix or a change to how TLE dependencies are declared.
 
 ---
 
 ### #34 — `db_pre_request` does not fire for Storage requests
 **Link:** https://github.com/point-source/supabase-tenant-rbac/issues/34
 
-The `db_pre_request` hook only runs in the PostgREST pipeline. Supabase Storage upload/download requests go through a different code path and do not trigger the hook. During storage operations, `request.groups` is NULL, and `get_user_claims()` falls back to (potentially stale) JWT claims.
+The `db_pre_request` hook only runs in the PostgREST pipeline. Supabase Storage goes through a separate code path and does not invoke it. Storage RLS policies fall back to (potentially stale) JWT claims.
 
-**Impact:** RLS policies on storage objects that use `user_has_group_role()` or `user_is_group_member()` will use outdated claims if a user's roles changed since their JWT was issued.
+**Impact:** Role changes take effect in Storage only when the user's JWT refreshes (default: up to 1 hour).
 
-**Workaround:** For storage-specific RLS, accept a staleness window equal to the JWT lifetime (default: 1 hour). Role changes for storage access take effect on the user's next token refresh.
+**Workaround:** Accept the JWT staleness window for storage policies, or use signed URLs / server-side access checks for operations requiring immediate revocation.
 
-**Status:** This is a fundamental limitation of Supabase's architecture. Cannot be fixed within this extension.
+**Status:** Open. Fundamental architectural limitation of Supabase. Cannot be fixed within this extension.
 
 ---
 
-## Open PRs (Ready to Merge)
+## Open PRs (Ready to Merge to upstream)
 
 ### PR #36 — Fix `role_centric.sql` example (fixes #35)
 **Link:** https://github.com/point-source/supabase-tenant-rbac/pull/36
-- 1-line fix: `for all` → `for select`
-- No test required, example-only change
+**Status:** Applied locally in Phase 1. Pending merge to upstream `main`.
 
-### PR #40 — `user_is_group_member` and `user_has_group_role` should return `true` for `service_role` (fixes #39)
+### PR #40 — Permission functions should return `true` for `service_role` (fixes #39)
 **Link:** https://github.com/point-source/supabase-tenant-rbac/pull/40
-- When these functions are used in views or application functions (not just RLS), they currently only short-circuit for `session_user = 'postgres'`. Calls made with the Supabase service_role key should also return `true` to be consistent with how service_role bypasses RLS.
-- Needs review and testing before merge
+**Status:** Applied and tested in v4.1.0. Pending merge to upstream `main`.
 
 ---
 
 ## Feature Requests
 
-### #39 — `user_is_group_member` / `user_has_group_role` should return `true` for service role
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/39
-**PR:** #40 is open
-
-When these functions are used in views or application functions (not just RLS policies), service_role requests currently return `false` unless `session_user = 'postgres'`. This is surprising because service_role requests already bypass RLS. PR #40 proposes a fix.
-
----
-
-### #38 — Auto-delete orphaned invites and user associations
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/38
-
-Suggests adding `ON DELETE CASCADE` to the foreign key constraints so that:
-- Deleting a group automatically removes all `group_users` and `group_invites` rows
-- Deleting a user automatically removes all their `group_users` and `group_invites` rows
-
-This would also resolve #11 (user deletion crash) by triggering the `update_user_roles` cleanup before the user is gone.
-
-**Targeted for v4.1.0.**
-
----
-
 ### #19 — Consider adopting the new Supabase Auth Hooks approach
 **Link:** https://github.com/point-source/supabase-tenant-rbac/issues/19
 **Opened by:** Supabase team member
 
-The official Supabase [custom claims & RBAC guide](https://supabase.com/docs/guides/auth/custom-claims-and-role-based-access-control-rbac) uses Auth Hooks to inject custom claims into JWTs at generation time. This is different from the `db_pre_request` approach used here.
+The official Supabase guide uses Auth Hooks to inject claims into JWTs at generation time, rather than the `db_pre_request` per-request approach.
 
 **Trade-offs:**
-- Auth Hooks: claims are in the JWT (client-visible, no per-request DB query), but stale until JWT refresh
-- `db_pre_request`: claims are always fresh (per-request DB query), but only works for PostgREST (not Storage)
+- Auth Hooks: claims in JWT (client-visible, no per-request DB query), but stale until refresh
+- `db_pre_request`: always fresh (per-request DB query), but only PostgREST (not Storage)
 
-**Decision:** Not pursuing Auth Hooks migration at this time. The `db_pre_request` approach provides better security (instant revocation) and is the core architectural differentiator of this extension.
+**Decision:** Not pursuing Auth Hooks migration. The `db_pre_request` approach provides instant revocation and is the core architectural differentiator of this extension.
 
 ---
 
-### #1 — Add pgTAP tests
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/1
-**Opened by:** Supabase team member
+## Support / Usage Questions
 
-There are currently no automated tests for any functionality. pgTAP is the standard PostgreSQL testing framework and is supported in the Supabase CLI.
+These issues represent gaps in documentation or common points of confusion.
 
-**Targeted for Phase 4 of the improvement plan.**
+### #33 — How to write RLS policies for a custom table with a `group_id` FK
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/33
+
+See the "Custom Data Table (End-to-End Example)" section in the README for a complete walkthrough.
+
+---
+
+### #32 — Hierarchical organizations (Org → Group → Users)
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/32
+
+This extension does not natively support nested group hierarchies. Options:
+1. **Use groups as orgs**: one group per org, roles like `org_member`, `org_admin`.
+2. **Store parent org in metadata**: `groups.metadata->>'parent_org_id'`, write custom RLS.
+3. **Separate `orgs` table**: replicate the RBAC pattern at a higher level.
+
+---
+
+### #30 — Mapping multi-tenancy concepts to groups/roles
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/30
+
+**Tenant = Group.** Each row in `groups` represents one tenant/organization. The `metadata` column stores tenant-specific data (name, plan, settings). Sub-groups or departments can be modeled as additional group rows with role naming conventions (e.g., `dept:engineering`).
+
+---
+
+### #27 — Nested groups and RLS performance
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/27
+
+Nested groups are not natively supported. Recursive group membership in RLS policies would incur per-row query costs. Recommended alternative: flatten hierarchies and use role naming (e.g., `team:alpha:member`).
+
+---
+
+### #26 — `supabase generate-types` fails with RBAC installed
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/26
+
+Type generation tools may produce schemas with missing dependencies for TLE functions. Workaround: exclude the RBAC schema from type generation, or manually add the missing types.
+
+---
+
+### #23 — `supabase pull` / schema dump omits RBAC tables
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/23
+
+The Supabase CLI schema dump does not include objects created by TLE extensions. This is expected: the extension is managed via `pgtle.install_extension()` and `CREATE EXTENSION` in your migration files. The tables are recreated when the migration runs.
+
+---
+
+### #22 — Upgrading to 4.0.0 fails in CI/CD
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/22
+
+`CREATE EXTENSION "pointsource-supabase_rbac" version "4.0.0"` fails with "no installation script nor update path for version 4.0.0" because the CI environment does not have `dbdev` installed.
+
+**Cause:** The `pgtle.install_extension()` migration must run before `CREATE EXTENSION`. Ensure migration timestamps are ordered so the install script precedes the create-extension step.
 
 ---
 
