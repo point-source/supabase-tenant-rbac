@@ -10,6 +10,16 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tools/claude_hook_upgrade_safety.sh"
+          }
+        ]
+      }
     ]
   }
 }
