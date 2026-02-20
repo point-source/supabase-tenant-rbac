@@ -38,6 +38,24 @@ Finally, the official docs guide you on implementing RBAC, but not Multi-Tenant 
 
 In summary, my package should accomplish everything the official solution does while also adding security, instant applicaiton of changes, more convenient methods to call in RLS policies, and multi-tenant support. I hope that in the future, some of this functionality might be added to the official solution.
 
+## Security Considerations
+
+> **Note:** A full security analysis is in [`docs/SECURITY.md`](docs/SECURITY.md). The highlights below are the most important things to understand before deploying.
+
+### Unconstrained role assignment (privilege escalation risk)
+
+By default, RLS on `group_users` is set to deny-all, so only the service role or `postgres` can assign roles. If you create policies that allow group admins to write to `group_users`, be aware that **nothing in the extension prevents an admin from assigning any role string, including a role they do not hold themselves.** If privilege escalation is a concern, add a check constraint or a `BEFORE INSERT/UPDATE` trigger on `group_users` that validates the role being assigned against an allowlist.
+
+### Invite expiration
+
+As of v4.2.0, `group_invites` has an optional `expires_at` column. Invites with `expires_at = NULL` never expire. Set `expires_at` to a future timestamp when creating an invite to ensure it cannot be used after that point. The edge function enforces this at acceptance time.
+
+Prior to v4.2.0, invites were valid indefinitely once created. If you are upgrading, consider auditing your open invites and setting an `expires_at` on any that should have been time-limited.
+
+### Claims freshness and Supabase Storage
+
+This extension uses the `db_pre_request` hook to ensure PostgREST always uses fresh claims from `auth.users` rather than the JWT cache. However, `db_pre_request` is a PostgREST-only mechanism — **Supabase Storage bypasses it and uses JWT-based claims only.** If your application uses Storage with RBAC policies, be aware that role changes will not take effect in Storage until the user's JWT refreshes (typically up to one hour).
+
 ## Compared to [custom-claims](https://github.com/supabase-community/supabase-custom-claims)
 
 The custom-claims project provides built-in functions for adding and removing generic claims to/from the `raw_app_meta_data` field of the auth.users records. This is highly flexible but is not opinionated about the way groups and roles should be handled.
@@ -125,10 +143,8 @@ If you would like to see [more RLS policy examples](https://github.com/point-sou
 1. Create a record in the "group_users" table which links to the group and the user via the foreign key columns ("group_id" and "user_id", respectively)
 1. Observe that the respective user record in auth.users has an updated `raw_app_meta_data` field which contains group and role information
 1. (Optional) Use the built-in role checking functions for RLS
-   - is_group_member
-   - has_group_role
-   - jwt_is_group_member
-   - jwt_has_group_role
+   - user_is_group_member
+   - user_has_group_role
 1. (Optional) Check the JWT signature and contents to determine roles on the client-side
 
 ### Built-in functions
@@ -199,8 +215,8 @@ on "group_invites"
 as permissive
 for all
 to public
-using (user_has_group_role(auth.uid(), "groupId", 'admin'))
-with check (user_has_group_role(auth.uid(), "groupId", 'admin'));
+using (user_has_group_role(group_id, 'admin'))
+with check (user_has_group_role(group_id, 'admin'));
 ```
 
 ## RLS Policy Examples (continued)

@@ -71,6 +71,8 @@ app.post("/invite/accept", function (request, response, next) {
         .eq("id", invite_code)
         .is("user_id", null)
         .is("accepted_at", null)
+        // Reject expired invites; null expires_at means the invite never expires
+        .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
         .select("id, group_id, roles");
 
       if (res.error != null || res.data[0] == null) {

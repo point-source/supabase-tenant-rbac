@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.2.0
+
+- Add invite expiration support — new nullable `expires_at` column on `group_invites`. Invites with `expires_at = NULL` never expire (backwards compatible; all existing invites get `NULL`). The invite acceptance edge function now rejects invites whose `expires_at` is set and in the past.
+- Add pgTAP regression test for invite expiration (7 assertions)
+- Add "Security Considerations" section to README covering privilege escalation risk, invite expiration, and Storage claims freshness
+- Fix outdated function names in README (`is_group_member` / `has_group_role` → `user_is_group_member` / `user_has_group_role`; removed `jwt_*` methods were removed in v1.0.0)
+- Fix incorrect function signature in README invite policy example (`user_has_group_role(group_id, 'admin')` — no `auth.uid()` argument)
+
 ## 4.1.0
 
 - Fix #37: Groupless users no longer crash `get_user_claims()` — `db_pre_request` now stores `'{}'` instead of NULL for users with no group memberships, and `get_user_claims()` handles empty string gracefully via `NULLIF`

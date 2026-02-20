@@ -60,23 +60,20 @@ Requires creating `supabase_rbac--4.1.0.sql` (full install), `supabase_rbac--4.0
 
 ---
 
-## Phase 3: Security Hardening & Invite Improvements → v4.1.0 (same release)
+## Phase 3: Security Hardening & Invite Improvements → v4.2.0
 
 ### 3.1 Add invite expiration support
-- [ ] **File:** New extension version — add column to `group_invites`
-  ```sql
-  ALTER TABLE group_invites ADD COLUMN "expires_at" timestamptz;
-  ```
-- [ ] **File:** `supabase/functions/invite/index.ts` — check expiry before accepting:
-  ```typescript
-  .is("expires_at", null) // not expired (null = no expiry set)
-  // OR check: .gt("expires_at", new Date().toISOString())
-  ```
-  Add: `.or('expires_at.is.null,expires_at.gt.' + new Date().toISOString())`
+- [x] **File:** `supabase_rbac--4.2.0.sql` — added nullable `expires_at timestamptz` column to `group_invites`
+- [x] **File:** `supabase_rbac--4.1.0--4.2.0.sql` — upgrade script (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`)
+- [x] **File:** `supabase_rbac.control` — version bumped to `4.2.0`
+- [x] **File:** `supabase/functions/invite/index.ts` — added `.or('expires_at.is.null,expires_at.gt.<now>')` filter
+- [x] **File:** `supabase/tests/06_invite_expiration.test.sql` — 7 pgTAP regression tests
 
 ### 3.2 Document privilege escalation risk
-- [ ] **File:** `docs/SECURITY.md` — already documented (see Role Assignment is Unconstrained section)
-- [ ] **File:** `README.md` — add a "Security Considerations" callout section
+- [x] **File:** `docs/SECURITY.md` — already documented (see Role Assignment is Unconstrained section)
+- [x] **File:** `README.md` — added "Security Considerations" section covering privilege escalation, invite expiry, and Storage claims gap
+- [x] **File:** `README.md` — fixed stale function names (`is_group_member` → `user_is_group_member`, removed deleted `jwt_*` methods)
+- [x] **File:** `README.md` — fixed wrong function signature in invite policy example
 
 ---
 
@@ -123,6 +120,6 @@ Requires creating `supabase_rbac--4.1.0.sql` (full install), `supabase_rbac--4.0
 |-------|--------|---------|
 | Phase 1: Immediate fixes | Complete | No version bump |
 | Phase 2: Extension bug fixes | Complete | v4.1.0 |
-| Phase 3: Security hardening | Pending | v4.1.0 |
+| Phase 3: Security hardening | Complete | v4.2.0 |
 | Phase 4: Testing | Pending | N/A |
 | Phase 5: Documentation | In progress (initial docs created) | N/A |
