@@ -1,6 +1,6 @@
 # supabase_rbac extension
 comment = 'Role-Based Access Control for your Supabase project'
-default_version = '4.2.0'
+default_version = '4.3.0'
 requires = moddatetime
 superuser = true
 relocatable = false

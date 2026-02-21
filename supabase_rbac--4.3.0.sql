@@ -1,9 +1,3 @@
-SELECT
-  pgtle.install_extension (
-    'pointsource-supabase_rbac',
-    '4.3.0',
-    'Supabase Multi-Tenant Role-based Access Control',
-    $_pgtle_$
 create table
   "groups" (
     "id" uuid not null default gen_random_uuid (),
@@ -304,7 +298,3 @@ alter table "group_users" enable row level security;
 alter table "groups" enable row level security;
 
 alter table "group_invites" enable row level security;
-$_pgtle_$
-  );
-
-CREATE EXTENSION "pointsource-supabase_rbac" version '4.3.0';

@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.3.0
+
+- Fix #34: Storage RLS policies now get fresh claims instead of stale JWT data — `get_user_claims()` falls back to a new `_get_user_groups()` SECURITY DEFINER helper that reads `auth.users` directly, giving Supabase Storage the same freshness guarantee as PostgREST requests. Existing RLS policies require no changes.
+- Add pgTAP regression tests for Storage claims path (8 assertions in `supabase/tests/08_storage_claims.test.sql`)
+- Add `examples/policies/storage_rls.sql` — two patterns for Storage RLS (group_id in path vs. group_id in object metadata)
+
 ## 4.2.0
 
 - Add invite expiration support — new nullable `expires_at` column on `group_invites`. Invites with `expires_at = NULL` never expire (backwards compatible; all existing invites get `NULL`). The invite acceptance edge function now rejects invites whose `expires_at` is set and in the past.

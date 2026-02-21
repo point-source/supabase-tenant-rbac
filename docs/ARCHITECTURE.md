@@ -99,10 +99,13 @@ The `groups` key is managed entirely by this extension. The `provider`/`provider
 6. RLS policies evaluate using user_has_group_role() / user_is_group_member()
    - These call get_user_claims()
    - get_user_claims() reads request.groups (fresh, from step 5)
-   - Falls back to auth.jwt()->'app_metadata'->'groups' if request.groups is null
+   - Falls back to _get_user_groups() if request.groups is unset (Storage path)
+   - _get_user_groups() reads auth.users directly [SECURITY DEFINER] — same source as db_pre_request
 ```
 
 **Key insight:** Step 5 happens on *every* API request, so role changes take effect immediately — no waiting for JWT expiry or re-login.
+
+**Storage path (v4.3.0+):** When `db_pre_request` does not run (Supabase Storage), `request.groups` is unset and `get_user_claims()` falls back to `_get_user_groups()`, which reads `auth.users` directly. Storage RLS policies therefore also always see fresh data.
 
 ---
 
@@ -120,10 +123,15 @@ Registered via (schema-qualified since v4.1.0):
 ALTER ROLE authenticator SET pgrst.db_pre_request TO '<schema>.db_pre_request';
 ```
 
+### `_get_user_groups()` → jsonb *(v4.3.0)*
+**SECURITY DEFINER** | Internal helper used as the fallback in `get_user_claims()`.
+
+Reads `raw_app_meta_data->'groups'` from `auth.users` for `auth.uid()`. Returns `'{}'` for unauthenticated users (`auth.uid()` is NULL) or users with no group memberships. Leading underscore signals this is an internal function, not a public API.
+
 ### `get_user_claims()` → jsonb
 Returns the current user's group/role claims as a JSONB object. Precedence:
-1. `request.groups` (set by `db_pre_request` — freshest, per-request)
-2. `auth.jwt()->'app_metadata'->'groups'` (from JWT — may be stale)
+1. `request.groups` (set by `db_pre_request` — freshest, per-request; PostgREST path)
+2. `_get_user_groups()` (direct DB read from `auth.users`; Storage path — v4.3.0+)
 
 Returns `'{}'::jsonb` for groupless users (not `null` — fixed in v4.1.0).
 

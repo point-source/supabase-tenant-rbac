@@ -54,7 +54,7 @@ Prior to v4.2.0, invites were valid indefinitely once created. If you are upgrad
 
 ### Claims freshness and Supabase Storage
 
-This extension uses the `db_pre_request` hook to ensure PostgREST always uses fresh claims from `auth.users` rather than the JWT cache. However, `db_pre_request` is a PostgREST-only mechanism — **Supabase Storage bypasses it and uses JWT-based claims only.** If your application uses Storage with RBAC policies, be aware that role changes will not take effect in Storage until the user's JWT refreshes (typically up to one hour).
+This extension uses the `db_pre_request` hook to ensure PostgREST always uses fresh claims from `auth.users` rather than the JWT cache. As of v4.3.0, Supabase Storage RLS policies also get fresh claims: `get_user_claims()` falls back to a `SECURITY DEFINER` helper that reads `auth.users` directly when `request.groups` is not set. Role changes take effect immediately for both PostgREST and Storage requests.
 
 ## Compared to [custom-claims](https://github.com/supabase-community/supabase-custom-claims)
 
@@ -168,7 +168,7 @@ This will return true if the `group_role` exists within the `raw_app_meta_data->
 Required inputs: none
 Returns: jsonb
 
-This will attempt to return the contents of `request.groups` (populated by the db_pre_request hook) which contains the user's group and role information. If `request.groups` is null, it will fallback to returning the contents of `app_meta_data->>groups` from the JWT. If neither are available, it will return an empty jsonb object.
+This will attempt to return the contents of `request.groups` (populated by the db_pre_request hook) which contains the user's group and role information. If `request.groups` is not set (e.g. in a Supabase Storage context), it falls back to reading `auth.users` directly via `_get_user_groups()`, ensuring fresh claims regardless of the request path. Returns an empty jsonb object for groupless or unauthenticated users.
 
 ## Setting up the Invitation system
 
@@ -348,11 +348,17 @@ notify pgrst, 'reload config';
 
 ### Storage RLS policies use stale claims after a role change
 
-**Symptom:** RLS policies on Supabase Storage objects that call `user_has_group_role()` or `user_is_group_member()` appear to use outdated group memberships for up to an hour after a role change.
+**Symptom:** On versions before v4.3.0, RLS policies on Supabase Storage objects that call `user_has_group_role()` or `user_is_group_member()` appeared to use outdated group memberships for up to an hour after a role change.
 
-**Cause:** The `db_pre_request` hook only fires in the PostgREST pipeline. Supabase Storage routes requests through a separate code path that does not invoke the hook. Storage therefore falls back to JWT claims, which are only refreshed when the user's session token is renewed (default: 1 hour). See [issue #34](https://github.com/point-source/supabase-tenant-rbac/issues/34).
+**Cause:** The `db_pre_request` hook only fires in the PostgREST pipeline. Supabase Storage routes requests through a separate code path that does not invoke the hook. See [issue #34](https://github.com/point-source/supabase-tenant-rbac/issues/34).
 
-**Workaround:** This is an architectural limitation that cannot be fixed within this extension. For storage access control, accept a staleness window equal to the JWT lifetime. If immediate revocation is critical, use server-side signed URLs or a separate access check rather than storage-level RLS based on group roles.
+**Fix:** Upgrade to v4.3.0 or later. `get_user_claims()` now falls back to a `SECURITY DEFINER` helper that reads `auth.users` directly when `request.groups` is not set, giving Storage RLS policies the same freshness guarantee as PostgREST requests. No changes to existing RLS policies are required.
+
+```sql
+alter extension "pointsource-supabase_rbac" update to '4.3.0';
+```
+
+See `examples/policies/storage_rls.sql` for Storage-specific RLS policy examples.
 
 ---
 

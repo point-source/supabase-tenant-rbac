@@ -11,13 +11,16 @@ Rather than trusting potentially stale JWT claims, `db_pre_request()` reads `aut
 - Revoked access cannot be bypassed with an old JWT
 - There is a small per-request DB query cost (typically negligible)
 
+As of v4.3.0, this freshness guarantee also applies to Supabase Storage. `get_user_claims()` falls back to `_get_user_groups()` (a SECURITY DEFINER helper that reads `auth.users` directly) rather than the JWT, so Storage RLS policies using `user_has_group_role()` or `user_is_group_member()` always see current data.
+
 ### 3. Schema Isolation
 All functions use `SET search_path = @extschema@` (never hardcoded `public`). This prevents search_path injection attacks where a malicious user creates a same-named function in a publicly-writable schema.
 
 ### 4. Minimal SECURITY DEFINER Surface
-Only two functions are `SECURITY DEFINER`:
+Three functions are `SECURITY DEFINER`:
 - `db_pre_request()` — needs to read `auth.users` (privileged table)
 - `update_user_roles()` — needs to write `auth.users.raw_app_meta_data` (privileged table)
+- `_get_user_groups()` *(v4.3.0)* — needs to read `auth.users` for the Storage fallback path
 
 All other functions (`user_has_group_role`, `user_is_group_member`, `get_user_claims`, `jwt_is_expired`) are `SECURITY INVOKER` and run with the calling user's permissions.
 
@@ -67,6 +70,18 @@ SET search_path TO @extschema@
 - **Bounded by RLS on `group_users`**: The trigger only fires when `group_users` is modified. Since `group_users` has RLS enabled, only authorized mutations reach this trigger.
 - **Immutability enforcement**: Raises an exception if `user_id` or `group_id` is changed on an existing row, preventing indirect privilege manipulation.
 
+### `_get_user_groups()` *(v4.3.0)*
+```sql
+CREATE FUNCTION _get_user_groups() RETURNS jsonb
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = @extschema@
+```
+
+- **Why SECURITY DEFINER**: Must read `auth.users` which is only accessible to privileged roles.
+- **Scope of elevated privilege**: Only reads `raw_app_meta_data->'groups'` for `auth.uid()` (the calling user's own data). Returns `'{}'` for unauthenticated/groupless users.
+- **Used exclusively as a fallback** in `get_user_claims()` when `request.groups` is not set (Storage path). PostgREST requests continue to use `db_pre_request`-populated session config.
+- **Leading underscore naming** (`_get_user_groups`) signals this is an internal implementation detail, not a public API.
+
 ---
 
 ## Known Security Limitations
@@ -98,25 +113,6 @@ Or use an allowlist of valid role strings enforced via a CHECK constraint or tri
 
 The core extension intentionally does NOT impose restrictions here because role naming is application-specific. This is a documented responsibility of the consumer.
 
-### No ON DELETE CASCADE
-
-**Risk level: Medium**
-
-Foreign keys from `group_users` and `group_invites` to `groups` do not cascade deletes. Deleting a group:
-- Does NOT delete `group_users` rows → orphaned memberships remain
-- Does NOT trigger `update_user_roles` → roles persist in `auth.users.raw_app_meta_data`
-- Users retain claims for the deleted group until their `group_users` rows are manually cleaned up
-
-**Workaround**: Manually delete `group_users` rows before deleting a group, or use a trigger/function to cascade the cleanup.
-
-### Invite Codes Never Expire
-
-**Risk level: Medium**
-
-The `group_invites` table has no expiration column. Once created, an invite code remains valid indefinitely until it is accepted. A leaked invite code (e.g., sent via insecure email, logged accidentally) can be claimed by any authenticated user at any time in the future.
-
-**Workaround**: Periodically audit and delete unused invite rows, or implement an application-layer expiry check.
-
 ### Inviter Permission Not Re-Checked at Acceptance
 
 **Risk level: Low**
@@ -124,48 +120,6 @@ The `group_invites` table has no expiration column. Once created, an invite code
 RLS controls who can create invites. However, once created, the invite is accepted by the edge function using the `service_role` key (bypasses RLS). If the inviter's permissions are revoked after creating an invite, the invite remains valid.
 
 **Mitigation**: The edge function checks `user_id IS NULL AND accepted_at IS NULL` to prevent reuse, but does not re-verify inviter permissions.
-
-### db_pre_request Does Not Cover Storage
-
-**Risk level: Low-Medium (scope limitation)**
-
-The `db_pre_request` hook runs in the PostgREST request pipeline only. Supabase Storage requests do not trigger this hook. This means:
-- `request.groups` will be NULL during storage operations
-- `get_user_claims()` falls back to the JWT claims (which may be stale)
-- RLS policies on storage objects that use `user_has_group_role()` or `user_is_group_member()` will use potentially outdated claims
-
-**Workaround**: For storage, rely on JWT-based claims (which are updated in `raw_app_meta_data` and included in new JWTs) rather than the fresh per-request approach. Accept a window of staleness equal to the JWT lifetime (default: 1 hour).
-
-### Custom Schema Requires Manual Configuration
-
-**Risk level: Low (configuration issue)**
-
-When installed in a non-`public` schema (e.g., `CREATE EXTENSION ... schema rbac`), the `db_pre_request` hook registration uses an unqualified function name:
-```sql
-ALTER ROLE authenticator SET pgrst.db_pre_request TO 'db_pre_request';
-```
-
-PostgREST resolves this without a schema qualifier and may fail to find the function, causing every API request to fail. See [Issue #29](https://github.com/point-source/supabase-tenant-rbac/issues/29).
-
-**Workaround**: After installing in a custom schema, manually run:
-```sql
-ALTER ROLE authenticator SET pgrst.db_pre_request TO 'your_schema.db_pre_request';
-NOTIFY pgrst, 'reload config';
-```
-
-### Groupless User Crash
-
-**Risk level: Medium (bug)**
-
-Users who register via Supabase's standard signup flow (and have never been added to a group) have no `groups` key in their `raw_app_meta_data`. When `db_pre_request` runs for these users, it stores an empty value in `request.groups`. `get_user_claims()` then attempts to cast this as `jsonb` and fails with `invalid input syntax for type json`.
-
-This means **any groupless authenticated user will receive a 500 error on every API request** if they hit a route where `db_pre_request` fires. See [Issue #37](https://github.com/point-source/supabase-tenant-rbac/issues/37) — targeted for fix in v4.1.0.
-
-### User Deletion Trigger Crash
-
-**Risk level: Medium (bug)**
-
-Deleting a user in `auth.users` cascades to `group_users` (FK constraint). The `update_user_roles` trigger fires for each deleted `group_users` row and attempts to `UPDATE auth.users WHERE id = _user_id` — but the user no longer exists. This currently raises an error. See [Issue #11](https://github.com/point-source/supabase-tenant-rbac/issues/11) — targeted for fix in v4.1.0.
 
 ---
 
@@ -177,9 +131,9 @@ Deleting a user in `auth.users` cascades to `group_users` (FK constraint). The `
 | Invite reuse prevention | Implemented | Checks `user_id IS NULL AND accepted_at IS NULL` |
 | User identity | Verified | Extracts `user.sub` from the verified JWT |
 | Service role usage | Expected | Uses service_role key to bypass RLS for the write operations |
-| Invite expiry | **Not implemented** | Invites never expire — see limitation above |
-| JWT logging on failure | **Bug** | Line 56 logs the raw token on verification failure (targeted for fix) |
-| Inviter re-verification | **Not implemented** | Does not re-check inviter's permissions at acceptance time |
+| Invite expiry | Implemented *(v4.2.0)* | `expires_at` column on `group_invites`; edge function rejects expired invites |
+| JWT logging on failure | Fixed *(v4.2.0)* | Raw token no longer logged on verification failure |
+| Inviter re-verification | Not implemented | Does not re-check inviter's permissions at acceptance time |
 
 ---
 

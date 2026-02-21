@@ -1,6 +1,6 @@
 # Known Issues
 
-This document catalogs GitHub issues and their current status. Issues are grouped by type. See [IMPROVEMENT_PLAN.md](./IMPROVEMENT_PLAN.md) for the phased roadmap.
+This document catalogs GitHub issues and their current status. Issues are grouped by type.
 
 ---
 
@@ -60,10 +60,19 @@ The "Members can read" policy in `examples/policies/role_centric.sql` incorrectl
 
 ---
 
-### #1 — No automated tests ✅ Completed in Phase 4
+### #34 — `db_pre_request` does not fire for Storage requests ✅ Fixed in v4.3.0
+**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/34
+
+The `db_pre_request` hook only runs in the PostgREST pipeline. Supabase Storage goes through a separate code path and does not invoke it. Previously, `get_user_claims()` fell back to potentially stale JWT claims for Storage requests.
+
+**Fix:** A new internal `_get_user_groups()` SECURITY DEFINER helper reads `auth.users` directly (the same source as `db_pre_request`). `get_user_claims()` now falls back to this helper instead of JWT claims, giving Storage RLS policies the same freshness guarantee as PostgREST requests.
+
+---
+
+### #1 — No automated tests ✅ Completed
 **Link:** https://github.com/point-source/supabase-tenant-rbac/issues/1
 
-There were no automated tests. pgTAP tests have been added in `supabase/tests/` — 7 test files, 46 assertions — and a GitHub Actions CI workflow runs them on every push and PR to `main`.
+There were no automated tests. pgTAP tests have been added in `supabase/tests/` and a GitHub Actions CI workflow runs them on every push and PR to `main`.
 
 ---
 
@@ -82,31 +91,6 @@ Supabase logical backups do not correctly capture the dependency between the TLE
 
 ---
 
-### #34 — `db_pre_request` does not fire for Storage requests
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/34
-
-The `db_pre_request` hook only runs in the PostgREST pipeline. Supabase Storage goes through a separate code path and does not invoke it. Storage RLS policies fall back to (potentially stale) JWT claims.
-
-**Impact:** Role changes take effect in Storage only when the user's JWT refreshes (default: up to 1 hour).
-
-**Workaround:** Accept the JWT staleness window for storage policies, or use signed URLs / server-side access checks for operations requiring immediate revocation.
-
-**Status:** Open. Fundamental architectural limitation of Supabase. Cannot be fixed within this extension.
-
----
-
-## Open PRs (Ready to Merge to upstream)
-
-### PR #36 — Fix `role_centric.sql` example (fixes #35)
-**Link:** https://github.com/point-source/supabase-tenant-rbac/pull/36
-**Status:** Applied locally in Phase 1. Pending merge to upstream `main`.
-
-### PR #40 — Permission functions should return `true` for `service_role` (fixes #39)
-**Link:** https://github.com/point-source/supabase-tenant-rbac/pull/40
-**Status:** Applied and tested in v4.1.0. Pending merge to upstream `main`.
-
----
-
 ## Feature Requests
 
 ### #19 — Consider adopting the new Supabase Auth Hooks approach
@@ -120,64 +104,6 @@ The official Supabase guide uses Auth Hooks to inject claims into JWTs at genera
 - `db_pre_request`: always fresh (per-request DB query), but only PostgREST (not Storage)
 
 **Decision:** Not pursuing Auth Hooks migration. The `db_pre_request` approach provides instant revocation and is the core architectural differentiator of this extension.
-
----
-
-## Support / Usage Questions
-
-These issues represent gaps in documentation or common points of confusion.
-
-### #33 — How to write RLS policies for a custom table with a `group_id` FK
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/33
-
-See the "Custom Data Table (End-to-End Example)" section in the README for a complete walkthrough.
-
----
-
-### #32 — Hierarchical organizations (Org → Group → Users)
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/32
-
-This extension does not natively support nested group hierarchies. Options:
-1. **Use groups as orgs**: one group per org, roles like `org_member`, `org_admin`.
-2. **Store parent org in metadata**: `groups.metadata->>'parent_org_id'`, write custom RLS.
-3. **Separate `orgs` table**: replicate the RBAC pattern at a higher level.
-
----
-
-### #30 — Mapping multi-tenancy concepts to groups/roles
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/30
-
-**Tenant = Group.** Each row in `groups` represents one tenant/organization. The `metadata` column stores tenant-specific data (name, plan, settings). Sub-groups or departments can be modeled as additional group rows with role naming conventions (e.g., `dept:engineering`).
-
----
-
-### #27 — Nested groups and RLS performance
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/27
-
-Nested groups are not natively supported. Recursive group membership in RLS policies would incur per-row query costs. Recommended alternative: flatten hierarchies and use role naming (e.g., `team:alpha:member`).
-
----
-
-### #26 — `supabase generate-types` fails with RBAC installed
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/26
-
-Type generation tools may produce schemas with missing dependencies for TLE functions. Workaround: exclude the RBAC schema from type generation, or manually add the missing types.
-
----
-
-### #23 — `supabase pull` / schema dump omits RBAC tables
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/23
-
-The Supabase CLI schema dump does not include objects created by TLE extensions. This is expected: the extension is managed via `pgtle.install_extension()` and `CREATE EXTENSION` in your migration files. The tables are recreated when the migration runs.
-
----
-
-### #22 — Upgrading to 4.0.0 fails in CI/CD
-**Link:** https://github.com/point-source/supabase-tenant-rbac/issues/22
-
-`CREATE EXTENSION "pointsource-supabase_rbac" version "4.0.0"` fails with "no installation script nor update path for version 4.0.0" because the CI environment does not have `dbdev` installed.
-
-**Cause:** The `pgtle.install_extension()` migration must run before `CREATE EXTENSION`. Ensure migration timestamps are ordered so the install script precedes the create-extension step.
 
 ---
 
