@@ -17,10 +17,11 @@ As of v4.3.0, this freshness guarantee also applies to Supabase Storage. `get_us
 All functions use `SET search_path = @extschema@` (never hardcoded `public`). This prevents search_path injection attacks where a malicious user creates a same-named function in a publicly-writable schema.
 
 ### 4. Minimal SECURITY DEFINER Surface
-Three functions are `SECURITY DEFINER`:
+Four functions are `SECURITY DEFINER`:
 - `db_pre_request()` — needs to read `auth.users` (privileged table)
 - `update_user_roles()` — needs to write `auth.users.raw_app_meta_data` (privileged table)
 - `_get_user_groups()` *(v4.3.0)* — needs to read `auth.users` for the Storage fallback path
+- `accept_group_invite()` *(v4.4.0)* — needs to write `group_invites` and `group_users` atomically, bypassing RLS
 
 All other functions (`user_has_group_role`, `user_is_group_member`, `get_user_claims`, `jwt_is_expired`) are `SECURITY INVOKER` and run with the calling user's permissions.
 
@@ -57,6 +58,7 @@ SET search_path = @extschema@
 - **Scope of elevated privilege**: Only reads `raw_app_meta_data->'groups'` for `auth.uid()` (the calling user's own data).
 - **Cannot be abused to read other users' data** since `auth.uid()` is always the authenticated user's ID.
 - **`set_config` scope**: Uses `false` for `is_local`, meaning the config persists for the session rather than just the transaction. In Supabase's PostgREST setup, sessions are reset between requests, so this is safe in practice.
+- **RPC access restricted** *(v4.4.0)*: `EXECUTE` is revoked from `PUBLIC` and granted only to `authenticator`. End users (anon/authenticated) receive a permission-denied error if they attempt to call this via `/rest/v1/rpc/db_pre_request`. The PostgREST pre-request hook, which runs as `authenticator`, is unaffected.
 
 ### `update_user_roles()`
 ```sql
@@ -81,6 +83,18 @@ SET search_path = @extschema@
 - **Scope of elevated privilege**: Only reads `raw_app_meta_data->'groups'` for `auth.uid()` (the calling user's own data). Returns `'{}'` for unauthenticated/groupless users.
 - **Used exclusively as a fallback** in `get_user_claims()` when `request.groups` is not set (Storage path). PostgREST requests continue to use `db_pre_request`-populated session config.
 - **Leading underscore naming** (`_get_user_groups`) signals this is an internal implementation detail, not a public API.
+
+### `accept_group_invite(p_invite_id uuid)` *(v4.4.0)*
+```sql
+CREATE FUNCTION accept_group_invite(p_invite_id uuid) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = @extschema@
+```
+
+- **Why SECURITY DEFINER**: Must write to `group_invites` and `group_users` atomically in a single transaction, bypassing RLS on those tables. RLS on `group_invites` would otherwise prevent the user from updating a row they don't own.
+- **Identity binding**: Uses `auth.uid()` (not a caller-supplied parameter) to identify the accepting user. A caller cannot accept an invite on behalf of another user.
+- **Atomicity**: `SELECT FOR UPDATE` locks the invite row, then `UPDATE` and `INSERT` execute in the same transaction. If either write fails, both are rolled back.
+- **RPC access restricted**: `EXECUTE` is revoked from `PUBLIC` and granted only to `authenticated`. Anon callers receive a permission-denied error before the function body executes.
 
 ---
 
@@ -113,26 +127,40 @@ Or use an allowlist of valid role strings enforced via a CHECK constraint or tri
 
 The core extension intentionally does NOT impose restrictions here because role naming is application-specific. This is a documented responsibility of the consumer.
 
+### `request.groups` is a Trusted Session Variable
+
+**Risk level: Low — requires a consumer to create a vulnerable function**
+
+`get_user_claims()` reads the `request.groups` session config key, which is set by `db_pre_request()` at the start of each PostgREST request. Any PostgreSQL function — including ones written by consumers — can overwrite this key using `set_config('request.groups', ...)`. If a consumer creates an RPC function that writes user-controlled input to `request.groups`, an end user could spoof their own group membership for the duration of that request and bypass RBAC.
+
+In a standard Supabase/PostgREST deployment, end users **cannot exploit this directly**: `set_config` lives in `pg_catalog` (not the `public` schema), so it is not exposed as an RPC endpoint, and PostgREST parameterizes all table-endpoint input. The risk materialises only if a consumer writes a vulnerable function.
+
+**Mitigation**: Never write an RPC function (or any function reachable by end users) that accepts user-supplied input and passes it to `set_config('request.groups', ...)`. Treat `request.groups` as an internal variable owned exclusively by `db_pre_request()`.
+
+A future major version may remove the `request.groups` fast path in favour of always calling `_get_user_groups()` directly, which would eliminate this concern entirely.
+
 ### Inviter Permission Not Re-Checked at Acceptance
 
 **Risk level: Low**
 
-RLS controls who can create invites. However, once created, the invite is accepted by the edge function using the `service_role` key (bypasses RLS). If the inviter's permissions are revoked after creating an invite, the invite remains valid.
+RLS controls who can create invites. However, once created, the invite is accepted via the `accept_group_invite()` SECURITY DEFINER function (which bypasses RLS). If the inviter's permissions are revoked after creating an invite, the invite remains valid until it is manually deleted or expires.
 
-**Mitigation**: The edge function checks `user_id IS NULL AND accepted_at IS NULL` to prevent reuse, but does not re-verify inviter permissions.
+**Mitigation**: `accept_group_invite()` checks `user_id IS NULL AND accepted_at IS NULL` to prevent reuse, but does not re-verify the inviter's current permissions. Set an `expires_at` on sensitive invites and delete them explicitly when access is revoked.
 
 ---
 
 ## Edge Function Security (`supabase/functions/invite/index.ts`)
 
+As of v4.4.0, the edge function is a thin HTTP wrapper. All invite validation, atomicity, and identity enforcement live in the `accept_group_invite()` database function.
+
 | Aspect | Status | Notes |
 |--------|--------|-------|
-| JWT verification | Verified | Uses `djwt` with HMAC-SHA256 and `SB_JWT_SECRET` |
-| Invite reuse prevention | Implemented | Checks `user_id IS NULL AND accepted_at IS NULL` |
-| User identity | Verified | Extracts `user.sub` from the verified JWT |
-| Service role usage | Expected | Uses service_role key to bypass RLS for the write operations |
-| Invite expiry | Implemented *(v4.2.0)* | `expires_at` column on `group_invites`; edge function rejects expired invites |
-| JWT logging on failure | Fixed *(v4.2.0)* | Raw token no longer logged on verification failure |
+| JWT verification | Delegated to database | User's JWT is forwarded to the RPC call; PostgREST verifies it and `auth.uid()` binds identity |
+| User identity | Enforced by `auth.uid()` | Identity comes from the verified JWT, not a caller-supplied parameter — users cannot accept on behalf of others |
+| Invite reuse prevention | Implemented | `SELECT FOR UPDATE` + `user_id IS NULL AND accepted_at IS NULL` check inside `accept_group_invite()` |
+| Atomicity | Implemented *(v4.4.0)* | `UPDATE group_invites` and `INSERT group_users` execute in a single transaction; partial failure is impossible |
+| Service role usage | Removed *(v4.4.0)* | Edge function now uses the user's own JWT; no service role key required |
+| Invite expiry | Implemented *(v4.2.0)* | `expires_at` checked inside `accept_group_invite()`; null means no expiry |
 | Inviter re-verification | Not implemented | Does not re-check inviter's permissions at acceptance time |
 
 ---

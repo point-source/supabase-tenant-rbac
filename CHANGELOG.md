@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.4.0
+
+- Add `accept_group_invite(p_invite_id uuid)` — atomic invite acceptance as a `SECURITY DEFINER` RPC function. The edge function's previous two-step approach (UPDATE then INSERT) was non-atomic; if the INSERT failed, the invite was consumed but the user received no group access. The new function wraps both writes in a single transaction and uses `SELECT ... FOR UPDATE` to prevent concurrent acceptance races.
+- Use `auth.uid()` (not a caller-supplied parameter) to bind the invite to the authenticated user — the same identity-from-JWT pattern used by `db_pre_request()` and `_get_user_groups()`. This prevents any authenticated user from accepting an invite on behalf of another.
+- Add `REVOKE EXECUTE ... FROM PUBLIC` / `GRANT EXECUTE ... TO authenticated` on `accept_group_invite` — defense-in-depth so anon callers are rejected before the function body executes.
+- Add `REVOKE EXECUTE ... FROM PUBLIC` / `GRANT EXECUTE ... TO authenticator` on `db_pre_request` — this function is only meant to be invoked by PostgREST's pre-request hook mechanism; restricting it prevents direct RPC calls from end users.
+- Simplify `supabase/functions/invite/index.ts` — the edge function is now a thin wrapper that calls `rpc('accept_group_invite', ...)` with the user's own JWT instead of the service role key. All atomicity and security logic lives in the database function.
+- Add pgTAP regression tests for RLS policy enforcement (5 assertions in `supabase/tests/09_rls_policies.test.sql`) — verifies group isolation: users can only read `sensitive_data` rows belonging to groups they are members of; anon and groupless users receive zero rows.
+- Add pgTAP regression tests for `jwt_is_expired()` (4 assertions in `supabase/tests/10_jwt_validation.test.sql`) — covers expired token, valid future token, empty JWT context, and missing `exp` claim.
+- Add `examples/policies/custom_table_isolation.sql` — shows both role-centric (owner/admin/viewer) and permission-centric (project.read/write/delete) RLS policies for a custom application table with a `group_id` FK.
+
 ## 4.3.0
 
 - Fix #34: Storage RLS policies now get fresh claims instead of stale JWT data — `get_user_claims()` falls back to a new `_get_user_groups()` SECURITY DEFINER helper that reads `auth.users` directly, giving Supabase Storage the same freshness guarantee as PostgREST requests. Existing RLS policies require no changes.

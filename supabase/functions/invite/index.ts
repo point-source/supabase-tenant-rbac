@@ -1,131 +1,53 @@
-// Follow this setup guide to integrate the Deno language server with your editor:
-// https://deno.land/manual/getting_started/setup_your_environment
-// This enables autocomplete, go to definition, etc.
-
-import { json, opine } from "https://deno.land/x/opine@2.3.4/mod.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.97.0";
-import { verify } from "https://deno.land/x/djwt@v3.0.2/mod.ts";
 
-const env = Deno.env.toObject();
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
 
-const SUPABASE_URL = env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = env.SUPABASE_SERVICE_ROLE_KEY;
-const SB_JWT_SECRET = env.SB_JWT_SECRET;
-
-if (
-  !(
-    SUPABASE_URL &&
-    SUPABASE_SERVICE_ROLE_KEY &&
-    SB_JWT_SECRET
-  )
-) {
-  console.log("A secret is missing");
+if (!(SUPABASE_URL && SUPABASE_ANON_KEY)) {
+  console.log("A required environment variable is missing");
 }
 
-const app = opine();
-app.use(json());
+/// Accept an invitation code and add the user to the group atomically via RPC.
+/// The accept_group_invite() database function handles all invite validation,
+/// the UPDATE + INSERT, and race-condition prevention inside a single transaction.
+Deno.serve(async (req) => {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
 
-/// Accept an invitation code and add the user to the group
-app.post("/invite/accept", function (request, response, next) {
-  Promise.resolve()
-    .then(async function () {
-      // Get the token from the Authorization header
-      const token = request.headers.get("Authorization")?.replace(
-        "Bearer ",
-        "",
-      );
-      if (!token) return response.setStatus(400).send("No authorization token");
+  // Get the token from the Authorization header
+  const token = req.headers.get("Authorization")?.replace("Bearer ", "");
+  if (!token) {
+    return new Response("No authorization token", { status: 400 });
+  }
 
-      // Get the invite code from the query string
-      const invite_code = request.query.invite_code;
-      if (!invite_code) {
-        return response.setStatus(400).send("No invite code provided");
-      }
+  // Get the invite code from the query string
+  const url = new URL(req.url);
+  const invite_code = url.searchParams.get("invite_code");
+  if (!invite_code) {
+    return new Response("No invite code provided", { status: 400 });
+  }
 
-      // Verify the token
-      const encoder = new TextEncoder();
-      const key = await crypto.subtle.importKey(
-        "raw",
-        encoder.encode(SB_JWT_SECRET),
-        { name: "HMAC", hash: "SHA-256" },
-        true,
-        ["verify"],
-      );
-      const user = await verify(token, key);
-      if (!user?.sub) {
-        console.log("User ID could not be retrieved from token.");
-        return response.setStatus(500).send("User ID could not be retrieved");
-      }
+  // Create a client using the user's own JWT (not service_role) so that
+  // auth.uid() resolves correctly inside accept_group_invite().
+  const userClient = createClient(SUPABASE_URL!, SUPABASE_ANON_KEY!, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { persistSession: false },
+  });
 
-      // Add the user to the group
-      const supabase = createClient(
-        SUPABASE_URL,
-        SUPABASE_SERVICE_ROLE_KEY,
-      );
+  const { error } = await userClient.rpc("accept_group_invite", {
+    p_invite_id: invite_code,
+  });
 
-      const res = await supabase.from("group_invites")
-        .update({
-          user_id: user.sub,
-          accepted_at: new Date().toISOString(),
-        })
-        .eq("id", invite_code)
-        .is("user_id", null)
-        .is("accepted_at", null)
-        // Reject expired invites; null expires_at means the invite never expires
-        .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
-        .select("id, group_id, roles");
+  if (error) {
+    console.error(`Error accepting invite ${invite_code}: ${error.message}`);
+    return new Response(error.message, { status: 400 });
+  }
 
-      if (res.error != null || res.data[0] == null) {
-        console.log(
-          `Invite code not found: ${invite_code}.`,
-          `Error: ${res.error?.message || "none"}.`,
-          `Data: ${res.data}`,
-        );
-        return response.setStatus(500).send("Invalid invite code");
-      }
-
-      const group_users = res.data[0].roles.map((role: string) => ({
-        user_id: user.sub,
-        group_id: res.data[0].group_id,
-        role: role,
-      }));
-
-      if (group_users.length == 0) {
-        console.log(`No roles assigned for invite code: ${invite_code}.`);
-        return response.setStatus(500).send(
-          "No roles assigned for invite code",
-        );
-      }
-
-      const res2 = await supabase.from("group_users")
-        .upsert(group_users, {
-          onConflict: "group_id,user_id,role",
-          ignoreDuplicates: true,
-        });
-
-      if (res2.error != null) {
-        console.log(
-          `Error adding user to group: ${res2.error?.message || "none"}.`,
-          `Data: ${JSON.stringify(group_users)}`,
-        );
-        return response.setStatus(500).send("Error adding user to group");
-      } else {
-        return response.setStatus(201).send(); // Created
-      }
-    })
-    .catch(next);
+  return new Response(null, { status: 201 });
 });
-
-// deno-lint-ignore no-explicit-any
-app.use(function (err: any, _req: any, res: any, _next: any) {
-  console.error(err.stack);
-  res.status(500).send("Something broke!");
-});
-
-app.listen(8000);
 
 // To invoke:
-// curl -i --location --request POST 'http://localhost:54321/functions/v1/' \
-//   --header 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0' \
-//   --header 'Content-Type: application/json' \
-//   --data '{"name":"Functions"}'
+// curl -i --location --request POST \
+//   'http://localhost:54321/functions/v1/invite?invite_code=<uuid>' \
+//   --header 'Authorization: Bearer <user-jwt>'
