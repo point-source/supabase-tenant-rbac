@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.5.0
+
+- Add `user_has_any_group_role(group_id uuid, group_roles text[])` — returns `true` if the current user has **any** of the listed roles in the group. Uses the JSONB `?|` operator for a single-call alternative to multiple `user_has_group_role()` calls joined with `OR`. Same auth tier dispatch (authenticated/anon/service_role) as `user_has_group_role()`.
+- Add `user_has_all_group_roles(group_id uuid, group_roles text[])` — returns `true` if the current user has **all** of the listed roles in the group. Uses the JSONB `?&` operator; useful when a policy requires a user to hold multiple roles or permission strings simultaneously.
+- Update `examples/policies/custom_table_isolation.sql` — Option A "Admins can write/update projects" policies now use `user_has_any_group_role(group_id, ARRAY['owner', 'admin'])` instead of separate `user_has_group_role()` calls, demonstrating the new bulk helper.
+- Add `examples/policies/hardened_setup.sql` — shows the defense-in-depth pattern of `REVOKE ALL` on RBAC tables followed by targeted `GRANT` statements, reducing reliance on RLS as the sole access control layer.
+- Add pgTAP regression tests for `accept_group_invite()` (9 assertions in `supabase/tests/11_accept_invite.test.sql`) — covers happy-path acceptance, `accepted_at`/`user_id` fields, trigger-driven `raw_app_meta_data` sync, expired invite rejection, double-acceptance rejection, nonexistent invite rejection, and multi-role invite row insertion.
+- Add pgTAP regression tests for REVOKE/GRANT access control (5 assertions in `supabase/tests/12_access_control.test.sql`) — verifies that `authenticated` and `anon` cannot execute `db_pre_request()`, that `anon` cannot execute `accept_group_invite()`, and that `authenticated` can execute the public-facing helper functions.
+
 ## 4.4.0
 
 - Add `accept_group_invite(p_invite_id uuid)` — atomic invite acceptance as a `SECURITY DEFINER` RPC function. The edge function's previous two-step approach (UPDATE then INSERT) was non-atomic; if the INSERT failed, the invite was consumed but the user received no group access. The new function wraps both writes in a single transaction and uses `SELECT ... FOR UPDATE` to prevent concurrent acceptance races.

@@ -144,6 +144,22 @@ Checks whether the current user has a specific role in a specific group. Used in
 - `session_user = 'postgres'` or `auth_role = 'service_role'` *(v4.1.0)*: always `true`
 - anything else (e.g., `authenticator`): always `false`
 
+### `user_has_any_group_role(group_id uuid, group_roles text[])` → boolean *(v4.5.0)*
+Returns `true` if the current user has **any** of the listed roles in the group. Uses the JSONB `?|` operator — a single-call replacement for multiple `user_has_group_role()` calls joined with `OR`. Same auth tier logic as `user_has_group_role()`.
+
+```sql
+-- instead of: user_has_group_role(gid, 'owner') OR user_has_group_role(gid, 'admin')
+user_has_any_group_role(gid, ARRAY['owner', 'admin'])
+```
+
+### `user_has_all_group_roles(group_id uuid, group_roles text[])` → boolean *(v4.5.0)*
+Returns `true` if the current user has **all** of the listed roles in the group. Uses the JSONB `?&` operator — useful when a policy requires simultaneous possession of multiple roles or permission strings. Same auth tier logic as `user_has_group_role()`.
+
+```sql
+-- require both project.read AND project.admin
+user_has_all_group_roles(gid, ARRAY['project.read', 'project.admin'])
+```
+
 ### `user_is_group_member(group_id uuid)` → boolean
 Checks whether the current user is a member of a group (any role). Same auth tier logic as above. More performant than `user_has_group_role` when any role grants access.
 

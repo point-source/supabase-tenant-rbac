@@ -2,7 +2,7 @@
 
 ## What This Project Is
 
-A PostgreSQL TLE (Trusted Language Extension) that provides multi-tenant RBAC for Supabase projects. Distributed via [database.dev](https://database.dev/pointsource/supabase_rbac) as `pointsource-supabase_rbac`. Current version: **4.0.0**.
+A PostgreSQL TLE (Trusted Language Extension) that provides multi-tenant RBAC for Supabase projects. Distributed via [database.dev](https://database.dev/pointsource/supabase_rbac) as `pointsource-supabase_rbac`. Current version: **4.5.0**.
 
 ## Repository Layout
 
@@ -119,7 +119,10 @@ Every PostgREST API request:
         └── writes: request.groups (session config)
 
 RLS policies call:
-    └── user_has_group_role(group_id, role) or user_is_group_member(group_id)
+    └── user_has_group_role(group_id, role)
+    │   user_has_any_group_role(group_id, roles[])  ← v4.5.0, uses ?| operator
+    │   user_has_all_group_roles(group_id, roles[]) ← v4.5.0, uses ?& operator
+    │   user_is_group_member(group_id)
         └── calls: get_user_claims()
             └── reads: request.groups (from db_pre_request) OR auth.jwt()
 ```

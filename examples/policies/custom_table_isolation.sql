@@ -37,21 +37,23 @@ for select
 to authenticated
 using (user_is_group_member(group_id));
 
--- Only admins (and owners) can create or update projects
+-- Admins and owners can create or update projects.
+-- user_has_any_group_role() (v4.5.0) replaces two separate user_has_group_role()
+-- calls in the policy expression, avoiding the OR chain.
 create policy "Admins can write projects"
 on "public"."projects"
 as permissive
 for insert
 to authenticated
-with check (user_has_group_role(group_id, 'admin'));
+with check (user_has_any_group_role(group_id, ARRAY['owner', 'admin']));
 
 create policy "Admins can update projects"
 on "public"."projects"
 as permissive
 for update
 to authenticated
-using (user_has_group_role(group_id, 'admin'))
-with check (user_has_group_role(group_id, 'admin'));
+using (user_has_any_group_role(group_id, ARRAY['owner', 'admin']))
+with check (user_has_any_group_role(group_id, ARRAY['owner', 'admin']));
 
 -- Only owners can delete projects
 create policy "Owners can delete projects"
