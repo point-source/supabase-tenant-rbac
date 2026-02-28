@@ -35,6 +35,8 @@ TEMP_FILE=$(mktemp)
 trap 'rm -f "$TEMP_FILE"' EXIT
 
 {
+    printf "CREATE SCHEMA IF NOT EXISTS rbac;\n"
+    printf "\n"
     printf "SELECT\n"
     printf "  pgtle.install_extension (\n"
     printf "    'pointsource-supabase_rbac',\n"
@@ -45,7 +47,7 @@ trap 'rm -f "$TEMP_FILE"' EXIT
     printf "\$_pgtle_\$\n"
     printf "  );\n"
     printf "\n"
-    printf "CREATE EXTENSION \"pointsource-supabase_rbac\" version '%s';\n" "$VERSION"
+    printf "CREATE EXTENSION \"pointsource-supabase_rbac\" SCHEMA rbac VERSION '%s';\n" "$VERSION"
 } > "$TEMP_FILE"
 
 # Only write if content changed (avoid dirty git state on no-op runs)

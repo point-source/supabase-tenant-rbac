@@ -1,6 +1,6 @@
 -- Tests for issue #38: ON DELETE CASCADE on foreign keys.
--- Verifies that deleting a group cleans up group_users and group_invites,
--- and that orphaned roles are removed from auth.users.raw_app_meta_data.
+-- Verifies that deleting a group cleans up members and invites,
+-- and that orphaned roles are removed from rbac.user_claims.
 
 BEGIN;
 SELECT plan(7);
@@ -20,22 +20,22 @@ INSERT INTO auth.users (
 );
 
 -- Setup: two test groups
-INSERT INTO public.groups (id, metadata) VALUES
-    ('cccccccc-0000-0000-0000-000000000002'::uuid, '{"name":"Group A"}'),
-    ('cccccccc-0000-0000-0000-000000000003'::uuid, '{"name":"Group B"}');
+INSERT INTO rbac.groups (id, name) VALUES
+    ('cccccccc-0000-0000-0000-000000000002'::uuid, 'Group A'),
+    ('cccccccc-0000-0000-0000-000000000003'::uuid, 'Group B');
 
 -- Assign role in Group A
-INSERT INTO public.group_users (group_id, user_id, role)
+INSERT INTO rbac.members (group_id, user_id, roles)
 VALUES ('cccccccc-0000-0000-0000-000000000002'::uuid,
-        'cccccccc-0000-0000-0000-000000000001'::uuid, 'admin');
+        'cccccccc-0000-0000-0000-000000000001'::uuid, ARRAY['admin']);
 
 -- Also assign in Group B (to verify only Group A is cleaned up)
-INSERT INTO public.group_users (group_id, user_id, role)
+INSERT INTO rbac.members (group_id, user_id, roles)
 VALUES ('cccccccc-0000-0000-0000-000000000003'::uuid,
-        'cccccccc-0000-0000-0000-000000000001'::uuid, 'viewer');
+        'cccccccc-0000-0000-0000-000000000001'::uuid, ARRAY['viewer']);
 
 -- Create an invite in Group A
-INSERT INTO public.group_invites (id, group_id, roles, invited_by)
+INSERT INTO rbac.invites (id, group_id, roles, invited_by)
 VALUES (
     'cccccccc-0000-0000-0000-000000000004'::uuid,
     'cccccccc-0000-0000-0000-000000000002'::uuid,
@@ -43,59 +43,59 @@ VALUES (
     'cccccccc-0000-0000-0000-000000000001'::uuid
 );
 
--- Test 1: role was synced to auth.users for Group A
+-- Test 1: role was synced to user_claims for Group A
 SELECT ok(
-    (SELECT raw_app_meta_data->'groups' ? 'cccccccc-0000-0000-0000-000000000002'
-     FROM auth.users WHERE id = 'cccccccc-0000-0000-0000-000000000001'::uuid),
-    'Group A role is in auth.users before group deletion'
+    (SELECT claims ? 'cccccccc-0000-0000-0000-000000000002'
+     FROM rbac.user_claims WHERE user_id = 'cccccccc-0000-0000-0000-000000000001'::uuid),
+    'Group A role is in user_claims before group deletion'
 );
 
--- Test 2: role was synced to auth.users for Group B
+-- Test 2: role was synced to user_claims for Group B
 SELECT ok(
-    (SELECT raw_app_meta_data->'groups' ? 'cccccccc-0000-0000-0000-000000000003'
-     FROM auth.users WHERE id = 'cccccccc-0000-0000-0000-000000000001'::uuid),
-    'Group B role is in auth.users before group deletion'
+    (SELECT claims ? 'cccccccc-0000-0000-0000-000000000003'
+     FROM rbac.user_claims WHERE user_id = 'cccccccc-0000-0000-0000-000000000001'::uuid),
+    'Group B role is in user_claims before group deletion'
 );
 
 -- Delete Group A
-DELETE FROM public.groups WHERE id = 'cccccccc-0000-0000-0000-000000000002'::uuid;
+DELETE FROM rbac.groups WHERE id = 'cccccccc-0000-0000-0000-000000000002'::uuid;
 
--- Test 3: group_users for Group A was cascade-deleted
+-- Test 3: members for Group A was cascade-deleted
 SELECT is(
-    (SELECT count(*)::integer FROM public.group_users
+    (SELECT count(*)::integer FROM rbac.members
      WHERE group_id = 'cccccccc-0000-0000-0000-000000000002'::uuid),
     0,
-    'group_users rows are cascade-deleted when group is deleted'
+    'members rows are cascade-deleted when group is deleted'
 );
 
--- Test 4: group_invites for Group A was cascade-deleted
+-- Test 4: invites for Group A was cascade-deleted
 SELECT is(
-    (SELECT count(*)::integer FROM public.group_invites
+    (SELECT count(*)::integer FROM rbac.invites
      WHERE group_id = 'cccccccc-0000-0000-0000-000000000002'::uuid),
     0,
-    'group_invites rows are cascade-deleted when group is deleted'
+    'invites rows are cascade-deleted when group is deleted'
 );
 
 -- Test 5: Group B membership is still intact
 SELECT is(
-    (SELECT count(*)::integer FROM public.group_users
+    (SELECT count(*)::integer FROM rbac.members
      WHERE group_id = 'cccccccc-0000-0000-0000-000000000003'::uuid),
     1,
-    'Group B group_users row is not affected by Group A deletion'
+    'Group B members row is not affected by Group A deletion'
 );
 
--- Test 6: Group A role removed from auth.users.raw_app_meta_data
+-- Test 6: Group A role removed from user_claims
 SELECT ok(
-    NOT (SELECT raw_app_meta_data->'groups' ? 'cccccccc-0000-0000-0000-000000000002'
-         FROM auth.users WHERE id = 'cccccccc-0000-0000-0000-000000000001'::uuid),
-    'Group A role is removed from auth.users.raw_app_meta_data after group deletion'
+    NOT (SELECT claims ? 'cccccccc-0000-0000-0000-000000000002'
+         FROM rbac.user_claims WHERE user_id = 'cccccccc-0000-0000-0000-000000000001'::uuid),
+    'Group A role is removed from user_claims after group deletion'
 );
 
--- Test 7: Group B role still in auth.users.raw_app_meta_data
+-- Test 7: Group B role still in user_claims
 SELECT ok(
-    (SELECT raw_app_meta_data->'groups' ? 'cccccccc-0000-0000-0000-000000000003'
-     FROM auth.users WHERE id = 'cccccccc-0000-0000-0000-000000000001'::uuid),
-    'Group B role remains in auth.users.raw_app_meta_data after Group A deletion'
+    (SELECT claims ? 'cccccccc-0000-0000-0000-000000000003'
+     FROM rbac.user_claims WHERE user_id = 'cccccccc-0000-0000-0000-000000000001'::uuid),
+    'Group B role remains in user_claims after Group A deletion'
 );
 
 SELECT * FROM finish();

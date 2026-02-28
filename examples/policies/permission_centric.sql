@@ -1,73 +1,69 @@
+-- Example: Permission-centric RLS policies using dot-notation permission strings
+--
+-- Assumes the extension is installed in the 'rbac' schema with public wrappers.
+
 create policy "Has invite permission"
-on "public"."group_invites"
+on rbac.invites
 as permissive
 for all
 to authenticated
-using (user_has_group_role(group_id, 'group_user.invite'))
-with check (user_has_group_role(group_id, 'group_user.invite'));
-
+using (has_role(group_id, 'group_user.invite'))
+with check (has_role(group_id, 'group_user.invite'));
 
 create policy "Has create permission"
-on "public"."group_users"
+on rbac.members
 as permissive
 for insert
 to authenticated
-with check (user_has_group_role(group_id, 'group_user.create'));
-
+with check (has_role(group_id, 'group_user.create'));
 
 create policy "Has delete permission"
-on "public"."group_users"
+on rbac.members
 as permissive
 for delete
 to authenticated
-using (user_has_group_role(group_id, 'group_user.delete'));
-
+using (has_role(group_id, 'group_user.delete'));
 
 create policy "Has read permission"
-on "public"."group_users"
+on rbac.members
 as permissive
 for select
 to authenticated
-using (user_has_group_role(group_id, 'group_user.read'));
-
+using (has_role(group_id, 'group_user.read'));
 
 create policy "Has update permission"
-on "public"."group_users"
+on rbac.members
 as permissive
 for update
 to authenticated
-using (user_has_group_role(group_id, 'group_user.update'))
-with check (user_has_group_role(group_id, 'group_user.update'));
-
+using (has_role(group_id, 'group_user.update'))
+with check (has_role(group_id, 'group_user.update'));
 
 create policy "Authenticated can create"
-on "public"."groups"
+on rbac.groups
 as permissive
 for insert
 to authenticated
 with check (true);
 
-
 create policy "Has delete permission"
-on "public"."groups"
+on rbac.groups
 as permissive
 for delete
 to authenticated
-using (user_has_group_role(id, 'group.delete'));
-
+using (has_role(id, 'group.delete'));
 
 create policy "Has update permission"
-on "public"."groups"
+on rbac.groups
 as permissive
 for update
 to authenticated
-using (user_has_group_role(id, 'group.update'))
-with check (user_has_group_role(id, 'group.update'));
-
+using (has_role(id, 'group.update'))
+with check (has_role(id, 'group.update'));
 
 create policy "Members can read"
-on "public"."groups"
+on rbac.groups
 as permissive
 for select
 to authenticated
-using (user_is_group_member(id));
+using (is_member(id));

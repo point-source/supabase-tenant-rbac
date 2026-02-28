@@ -1,40 +1,45 @@
--- Allow authenticated group members with the "admin" role to perform CRUD operations on group_invites
+-- Example: Role-centric RLS policies using named roles (owner, admin, viewer)
+--
+-- Assumes the extension is installed in the 'rbac' schema with public wrappers.
+-- The unqualified function names (has_role, is_member) resolve to public wrappers.
+
+-- Allow authenticated group members with the "admin" role to perform CRUD operations on invites
 create policy "Admins can CRUD"
-on "public"."group_invites"
+on rbac.invites
 as permissive
 for all
 to authenticated
-using (user_has_group_role(group_id, 'admin'::text))
-with check (user_has_group_role(group_id, 'admin'::text));
+using (has_role(group_id, 'admin'::text))
+with check (has_role(group_id, 'admin'::text));
 
--- Allow authenticated group members with the "admin" role to perform CRUD operations on group_users
+-- Allow authenticated group members with the "admin" role to perform CRUD operations on members
 create policy "Admins can CRUD"
-on "public"."group_users"
+on rbac.members
 as permissive
 for all
 to authenticated
-using (user_has_group_role(group_id, 'admin'::text))
-with check (user_has_group_role(group_id, 'admin'::text));
+using (has_role(group_id, 'admin'::text))
+with check (has_role(group_id, 'admin'::text));
 
--- Allow authenticated group members with any role to read group_users
+-- Allow authenticated group members with any role to read members
 create policy "Members can read"
-on "public"."group_users"
+on rbac.members
 as permissive
 for select
 to authenticated
-using (user_is_group_member(group_id));
+using (is_member(group_id));
 
--- Allow authenticated group members with the "admin" role to perform UPDATE operations on groups
+-- Allow authenticated group members with the "admin" role to update groups
 create policy "Admins can update"
-on "public"."groups"
+on rbac.groups
 as permissive
 for update
 to authenticated
-using (user_has_group_role(id, 'admin'::text));
+using (has_role(id, 'admin'::text));
 
--- Allow authenticated users to perform INSERT operations on groups (no previous group membership required)
+-- Allow authenticated users to create groups (no previous membership required)
 create policy "Authenticated can insert"
-on "public"."groups"
+on rbac.groups
 as permissive
 for insert
 to authenticated
@@ -42,19 +47,16 @@ with check (true);
 
 -- Allow authenticated group members with any role to read groups
 create policy "Members can read"
-on "public"."groups"
+on rbac.groups
 as permissive
 for select
 to authenticated
-using (user_is_group_member(id));
+using (is_member(id));
 
--- Allow authenticated group members with the "owner" role to perform DELETE operations on groups
+-- Allow authenticated group members with the "owner" role to delete groups
 create policy "Owners can delete"
-on "public"."groups"
+on rbac.groups
 as permissive
 for delete
 to authenticated
-using (user_has_group_role(id, 'owner'::text));
-
-
-
+using (has_role(id, 'owner'::text));

@@ -1,5 +1,57 @@
 # Changelog
 
+## 5.0.0
+
+**Breaking release** — no upgrade path from v4.x. See the migration notes below.
+
+### Breaking Changes
+
+- **Private schema**: Tables now live in `@extschema@` (recommended: `rbac`), which should NOT be in PostgREST's `db_schemas`. All interaction goes through RPC functions.
+- **`group_users` → `members`**: One row per membership with a `roles text[]` array. The multi-row-per-role model is removed.
+- **`group_invites` → `invites`**: Renamed for brevity; columns unchanged.
+- **`groups.name`**: New required `text NOT NULL` column. Group name was previously stored in `metadata->>'name'`.
+- **Function renames**: `user_has_group_role` → `has_role`, `user_is_group_member` → `is_member`, `user_has_any_group_role` → `has_any_role`, `user_has_all_group_roles` → `has_all_roles`, `get_user_claims` → `get_claims`, `jwt_is_expired` → `_jwt_is_expired` (internal), `accept_group_invite` → `accept_invite`.
+- **`moddatetime` removed**: Replaced by an inline `_set_updated_at()` trigger. No external dependency required.
+- **Management RPCs**: New functions `create_group()`, `delete_group()`, `add_member()`, `remove_member()`, `update_member_roles()`, `list_members()` replace direct table access. `create_group()` auto-adds the caller as a member with specified roles (default `ARRAY['owner']`).
+
+### New Features
+
+- **Global `roles` table**: Define valid role strings in `@extschema@.roles`. All management RPCs validate role assignments against this table. Pre-seeded with `'owner'`.
+- **Role management RPCs**: `create_role()`, `delete_role()`, `list_roles()` for managing role definitions. `delete_role()` refuses to delete a role that is in use by any member.
+- **`_validate_roles()`**: Internal helper that checks role arrays against the `roles` table. Raises a descriptive error listing undefined roles.
+- **Public wrapper functions**: When installed in a non-`public` schema, thin pass-through functions are auto-created in `public` for PostgREST RPC discovery and unqualified RLS policy calls. Cleaned up automatically by `DROP EXTENSION`.
+- **`_sync_member_metadata()`**: Simplified trigger that rebuilds the entire user's claims on any `members` change (INSERT/UPDATE/DELETE). Replaces the incremental `update_user_roles()` approach.
+
+### Migration from v4.x
+
+There is no automated upgrade path. To migrate:
+
+1. Export your group/membership data from `groups`, `group_users`, and `group_invites`
+2. `DROP EXTENSION "pointsource-supabase_rbac"`
+3. Install v5.0.0 with `CREATE EXTENSION "pointsource-supabase_rbac" SCHEMA rbac`
+4. Re-import data into `rbac.groups` (add `name` column), `rbac.members` (collapse roles into arrays), `rbac.invites`
+5. Add role definitions to `rbac.roles` for every role string you use
+6. Update RLS policies to use the new function names (`has_role`, `is_member`, etc.)
+7. Add RLS policies on the `rbac.*` tables themselves (see `examples/policies/quickstart.sql`)
+
+### New Examples
+
+- `examples/policies/quickstart.sql` — recommended starter RLS policies for `rbac.*` tables
+- `examples/setup/remove_public_wrappers.sql` — how to drop auto-created `public.*` wrappers
+
+### Claims Cache Refactor (v5.0.0 update)
+
+- **New `user_claims` table**: Extension-owned claims cache (`user_id PK`, `claims jsonb`). Replaces `auth.users.raw_app_meta_data->'groups'` as the storage backend for group/role data. `ON DELETE CASCADE` automatically cleans up claims when a user is deleted.
+- **SECURITY DEFINER reduction**: `_sync_member_metadata`, `db_pre_request`, and `_get_user_groups` are now `SECURITY INVOKER`. None of these functions need to read or write `auth.users` anymore. Only `create_group` and `accept_invite` retain SECURITY DEFINER (bootstrap operations).
+- **`custom_access_token_hook(event jsonb)`**: New Supabase Auth Hook function. Injects `app_metadata.groups` into JWTs at token creation time by reading from `user_claims`. Register via `config.toml` `[auth.hook.custom_access_token]`. Public wrapper auto-created at `public.custom_access_token_hook`.
+
+### New Tests
+
+- `13_management_rpcs.test.sql` — management RPC tests (12 assertions)
+- `14_roles_array.test.sql` — roles array behavior tests (7 assertions)
+- `15_role_definitions.test.sql` — role validation and CRUD tests (8 assertions)
+- `16_auth_hook.test.sql` — custom_access_token_hook tests (5 assertions)
+
 ## 4.5.0
 
 - Add `user_has_any_group_role(group_id uuid, group_roles text[])` — returns `true` if the current user has **any** of the listed roles in the group. Uses the JSONB `?|` operator for a single-call alternative to multiple `user_has_group_role()` calls joined with `OR`. Same auth tier dispatch (authenticated/anon/service_role) as `user_has_group_role()`.

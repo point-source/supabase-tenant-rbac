@@ -1,6 +1,10 @@
--- Tests for the core role synchronization trigger (update_user_roles).
--- Verifies that INSERT/UPDATE/DELETE on group_users correctly propagates
--- changes to auth.users.raw_app_meta_data.
+-- Tests for the core role synchronization trigger (_sync_member_metadata).
+-- Verifies that INSERT/UPDATE/DELETE on members correctly propagates
+-- changes to rbac.user_claims.
+--
+-- In v5.0.0, members stores roles as a text[] array (one row per membership).
+-- The trigger rebuilds the entire user's claims from the members table and
+-- upserts into user_claims (replaces auth.users.raw_app_meta_data as cache).
 
 BEGIN;
 SELECT plan(8);
@@ -26,96 +30,92 @@ INSERT INTO auth.users (
     false, 'authenticated'
 );
 
-INSERT INTO public.groups (id, metadata) VALUES
-    ('dddddddd-0000-0000-0000-000000000002'::uuid, '{"name":"Sync Test Group"}'),
-    ('dddddddd-0000-0000-0000-000000000008'::uuid, '{"name":"Alt Group"}');
+INSERT INTO rbac.groups (id, name) VALUES
+    ('dddddddd-0000-0000-0000-000000000002'::uuid, 'Sync Test Group'),
+    ('dddddddd-0000-0000-0000-000000000008'::uuid, 'Alt Group');
 
--- Test 1: INSERT into group_users syncs role to auth.users
-INSERT INTO public.group_users (group_id, user_id, role)
+-- Test 1: INSERT into members syncs roles to user_claims
+INSERT INTO rbac.members (group_id, user_id, roles)
 VALUES ('dddddddd-0000-0000-0000-000000000002'::uuid,
-        'dddddddd-0000-0000-0000-000000000001'::uuid, 'viewer');
+        'dddddddd-0000-0000-0000-000000000001'::uuid, ARRAY['viewer']);
 
 SELECT is(
-    (SELECT raw_app_meta_data->'groups'->'dddddddd-0000-0000-0000-000000000002'
-     FROM auth.users WHERE id = 'dddddddd-0000-0000-0000-000000000001'::uuid),
+    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'
+     FROM rbac.user_claims WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid),
     '["viewer"]'::jsonb,
-    'INSERT into group_users adds role to auth.users.raw_app_meta_data'
+    'INSERT into members syncs roles array to rbac.user_claims'
 );
 
--- Test 2: second INSERT adds second role (multi-role support)
-INSERT INTO public.group_users (group_id, user_id, role)
-VALUES ('dddddddd-0000-0000-0000-000000000002'::uuid,
-        'dddddddd-0000-0000-0000-000000000001'::uuid, 'admin');
+-- Test 2: UPDATE adds roles to the array
+UPDATE rbac.members
+SET roles = ARRAY['viewer', 'admin']
+WHERE group_id = 'dddddddd-0000-0000-0000-000000000002'::uuid
+  AND user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid;
 
 SELECT ok(
-    (SELECT raw_app_meta_data->'groups'->'dddddddd-0000-0000-0000-000000000002'
-     FROM auth.users WHERE id = 'dddddddd-0000-0000-0000-000000000001'::uuid)
+    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'
+     FROM rbac.user_claims WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid)
     @> '["viewer","admin"]'::jsonb,
-    'second INSERT adds second role (both roles present in metadata)'
+    'UPDATE on roles syncs both roles to user_claims'
 );
 
--- Test 3: duplicate INSERT (via upsert) does not duplicate roles in metadata
-INSERT INTO public.group_users (group_id, user_id, role)
-VALUES ('dddddddd-0000-0000-0000-000000000002'::uuid,
-        'dddddddd-0000-0000-0000-000000000001'::uuid, 'viewer')
-ON CONFLICT (group_id, user_id, role) DO NOTHING;
-
+-- Test 3: roles array length matches after update
 SELECT is(
     jsonb_array_length(
-        (SELECT raw_app_meta_data->'groups'->'dddddddd-0000-0000-0000-000000000002'
-         FROM auth.users WHERE id = 'dddddddd-0000-0000-0000-000000000001'::uuid)
+        (SELECT claims->'dddddddd-0000-0000-0000-000000000002'
+         FROM rbac.user_claims WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid)
     ),
     2,
-    'duplicate role INSERT does not create duplicate entries in metadata'
+    'user_claims has exactly 2 roles after update'
 );
 
--- Test 4: DELETE removes the specific role from metadata
-DELETE FROM public.group_users
+-- Test 4: UPDATE removing a role from the array
+UPDATE rbac.members
+SET roles = ARRAY['admin']
 WHERE group_id = 'dddddddd-0000-0000-0000-000000000002'::uuid
-  AND user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid
-  AND role = 'viewer';
+  AND user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid;
 
 SELECT is(
-    (SELECT raw_app_meta_data->'groups'->'dddddddd-0000-0000-0000-000000000002'
-     FROM auth.users WHERE id = 'dddddddd-0000-0000-0000-000000000001'::uuid),
+    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'
+     FROM rbac.user_claims WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid),
     '["admin"]'::jsonb,
-    'DELETE from group_users removes only that role from metadata (admin remains)'
+    'UPDATE removing viewer leaves only admin in user_claims'
 );
 
--- Test 5: DELETE of last role removes the group key from metadata
-DELETE FROM public.group_users
+-- Test 5: DELETE of membership removes the group key from user_claims
+DELETE FROM rbac.members
 WHERE group_id = 'dddddddd-0000-0000-0000-000000000002'::uuid
-  AND user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid
-  AND role = 'admin';
+  AND user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid;
 
 SELECT ok(
-    NOT (SELECT raw_app_meta_data->'groups' ? 'dddddddd-0000-0000-0000-000000000002'
-         FROM auth.users WHERE id = 'dddddddd-0000-0000-0000-000000000001'::uuid),
-    'DELETE of last role removes the group key from metadata entirely'
+    NOT coalesce(
+        (SELECT claims ? 'dddddddd-0000-0000-0000-000000000002'
+         FROM rbac.user_claims WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid),
+        false
+    ),
+    'DELETE of membership removes the group key from user_claims entirely'
 );
 
--- Test 6: UPDATE on role column changes the role in metadata
-INSERT INTO public.group_users (group_id, user_id, role)
+-- Test 6: UPDATE replaces roles correctly
+INSERT INTO rbac.members (group_id, user_id, roles)
 VALUES ('dddddddd-0000-0000-0000-000000000002'::uuid,
-        'dddddddd-0000-0000-0000-000000000001'::uuid, 'viewer');
+        'dddddddd-0000-0000-0000-000000000001'::uuid, ARRAY['viewer']);
 
-UPDATE public.group_users
-SET role = 'owner'
+UPDATE rbac.members
+SET roles = ARRAY['owner']
 WHERE group_id = 'dddddddd-0000-0000-0000-000000000002'::uuid
-  AND user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid
-  AND role = 'viewer';
+  AND user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid;
 
 SELECT is(
-    (SELECT raw_app_meta_data->'groups'->'dddddddd-0000-0000-0000-000000000002'
-     FROM auth.users WHERE id = 'dddddddd-0000-0000-0000-000000000001'::uuid),
+    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'
+     FROM rbac.user_claims WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid),
     '["owner"]'::jsonb,
-    'UPDATE role replaces old role with new role in metadata'
+    'UPDATE replacing roles is reflected in user_claims'
 );
 
 -- Test 7: attempting to change user_id raises an exception
--- Use an existing valid user_id so the FK passes and the trigger can check
 SELECT throws_ok(
-    $$UPDATE public.group_users
+    $$UPDATE rbac.members
       SET user_id = 'dddddddd-0000-0000-0000-000000000009'::uuid
       WHERE group_id = 'dddddddd-0000-0000-0000-000000000002'::uuid
         AND user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid$$,
@@ -125,9 +125,8 @@ SELECT throws_ok(
 );
 
 -- Test 8: attempting to change group_id raises an exception
--- Use an existing valid group_id so the FK passes and the trigger can check
 SELECT throws_ok(
-    $$UPDATE public.group_users
+    $$UPDATE rbac.members
       SET group_id = 'dddddddd-0000-0000-0000-000000000008'::uuid
       WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid$$,
     'P0001',

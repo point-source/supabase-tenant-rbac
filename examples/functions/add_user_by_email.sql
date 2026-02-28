@@ -1,31 +1,55 @@
-CREATE
-OR REPLACE FUNCTION my_schema_name.add_group_user_by_email (user_email text, gid uuid, group_role text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER
-SET
-    search_path = my_schema_name AS $function$
-	declare
-		uid uuid = auth.uid();
-		recipient_id uuid;
-		new_record_id uuid;
-	BEGIN
-		if uid is null then
-			raise exception 'not_authorized' using hint = 'You are are not authorized to perform this action';
-		end if;
-	
-		if not exists(select id from group_users gu where gu.user_id = uid AND gu.group_id = gid AND gu.role = 'owner') then
-			raise exception 'not_authorized' using hint = 'You are are not authorized to perform this action';
-		end if;
-	
-		select u.id from auth.users u into recipient_id where u.email = user_email;
-	
-		if recipient_id is null then
-			raise exception 'failed_to_add_user' using hint = 'User could not be added to group';
-		end if;
-	
-		INSERT INTO group_users (group_id, user_id, role) VALUES (gid, recipient_id, group_role) returning id into new_record_id;
-	
-		return new_record_id;
-	exception
-		when unique_violation then
-			raise exception 'failed_to_add_user' using hint = 'User could not be added to group';
-	END;
+-- NOTE: In v5.0.0, the add_member() RPC function largely supersedes this.
+-- Use add_member() with a user UUID instead. This example remains for cases
+-- where you need to look up a user by email and add them to a group.
+
+CREATE OR REPLACE FUNCTION my_schema_name.add_member_by_email(
+    user_email text,
+    gid uuid,
+    group_roles text[] DEFAULT ARRAY['viewer']
+)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = my_schema_name
+AS $function$
+DECLARE
+    uid uuid = auth.uid();
+    recipient_id uuid;
+    new_record_id uuid;
+BEGIN
+    IF uid IS NULL THEN
+        RAISE EXCEPTION 'not_authorized'
+            USING HINT = 'You are not authorized to perform this action';
+    END IF;
+
+    IF NOT EXISTS(
+        SELECT 1 FROM members m
+        WHERE m.user_id = uid AND m.group_id = gid AND 'owner' = ANY(m.roles)
+    ) THEN
+        RAISE EXCEPTION 'not_authorized'
+            USING HINT = 'You are not authorized to perform this action';
+    END IF;
+
+    SELECT u.id FROM auth.users u INTO recipient_id WHERE u.email = user_email;
+
+    IF recipient_id IS NULL THEN
+        RAISE EXCEPTION 'failed_to_add_user'
+            USING HINT = 'User could not be added to group';
+    END IF;
+
+    INSERT INTO members (group_id, user_id, roles)
+    VALUES (gid, recipient_id, group_roles)
+    ON CONFLICT (group_id, user_id)
+    DO UPDATE SET roles = (
+        SELECT array_agg(DISTINCT r ORDER BY r)
+        FROM unnest(members.roles || EXCLUDED.roles) AS r
+    )
+    RETURNING id INTO new_record_id;
+
+    RETURN new_record_id;
+EXCEPTION
+    WHEN unique_violation THEN
+        RAISE EXCEPTION 'failed_to_add_user'
+            USING HINT = 'User could not be added to group';
+END;
 $function$;

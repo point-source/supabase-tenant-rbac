@@ -8,7 +8,7 @@ if (!(SUPABASE_URL && SUPABASE_ANON_KEY)) {
 }
 
 /// Accept an invitation code and add the user to the group atomically via RPC.
-/// The accept_group_invite() database function handles all invite validation,
+/// The accept_invite() database function handles all invite validation,
 /// the UPDATE + INSERT, and race-condition prevention inside a single transaction.
 Deno.serve(async (req) => {
   if (req.method !== "POST") {
@@ -29,13 +29,13 @@ Deno.serve(async (req) => {
   }
 
   // Create a client using the user's own JWT (not service_role) so that
-  // auth.uid() resolves correctly inside accept_group_invite().
+  // auth.uid() resolves correctly inside accept_invite().
   const userClient = createClient(SUPABASE_URL!, SUPABASE_ANON_KEY!, {
     global: { headers: { Authorization: `Bearer ${token}` } },
     auth: { persistSession: false },
   });
 
-  const { error } = await userClient.rpc("accept_group_invite", {
+  const { error } = await userClient.rpc("accept_invite", {
     p_invite_id: invite_code,
   });
 

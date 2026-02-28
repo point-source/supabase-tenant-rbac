@@ -67,30 +67,14 @@ truncate on table "public"."sensitive_data" to "service_role";
 grant
 update on table "public"."sensitive_data" to "service_role";
 
-create policy "Allow group admins to modify" on "public"."sensitive_data" as permissive for all to authenticated using (
-    user_has_group_role (owned_by_group, 'admin'::text)
-)
-with
-    check (
-        user_has_group_role (owned_by_group, 'admin'::text)
-    );
-
-create policy "Allow group member to read" on "public"."sensitive_data" as permissive for
-select
-    to authenticated using (user_is_group_member (owned_by_group));
-
-drop policy "Allow group admins to modify" on "sensitive_data";
-
-drop policy "Allow group member to read" on "sensitive_data";
-
 create policy "Has update permission" on "sensitive_data" as permissive for all to authenticated using (
-    user_has_group_role (owned_by_group, 'group_data.update'::text)
+    has_role (owned_by_group, 'group_data.update'::text)
 )
 with
     check (
-        user_has_group_role (owned_by_group, 'group_data.update'::text)
+        has_role (owned_by_group, 'group_data.update'::text)
     );
 
 create policy "Allow group member to read" on "sensitive_data" as permissive for
 select
-    to authenticated using (user_is_group_member (owned_by_group));
+    to authenticated using (is_member (owned_by_group));
