@@ -17,10 +17,16 @@
 ### New Features
 
 - **Global `roles` table**: Define valid role strings in `@extschema@.roles`. All management RPCs validate role assignments against this table. Pre-seeded with `'owner'`.
-- **Role management RPCs**: `create_role()`, `delete_role()`, `list_roles()` for managing role definitions. `delete_role()` refuses to delete a role that is in use by any member.
+- **Role management RPCs**: `create_role()`, `delete_role()`, `list_roles()` for managing role definitions. `delete_role()` refuses to delete a role that is in use by any member. These are **service_role only** (app-author operations).
 - **`_validate_roles()`**: Internal helper that checks role arrays against the `roles` table. Raises a descriptive error listing undefined roles.
-- **Public wrapper functions**: When installed in a non-`public` schema, thin pass-through functions are auto-created in `public` for PostgREST RPC discovery and unqualified RLS policy calls. Cleaned up automatically by `DROP EXTENSION`.
+- **Opt-in public wrapper functions**: Public schema wrappers are no longer auto-created. Run `examples/setup/create_public_wrappers.sql` after installation to expose functions for PostgREST RPC discovery or unqualified RLS policy calls. Default install has zero public surface.
 - **`_sync_member_metadata()`**: Simplified trigger that rebuilds the entire user's claims on any `members` change (INSERT/UPDATE/DELETE). Replaces the incremental `update_user_roles()` approach.
+- **Permission layer (ORBAC)**: Roles now carry a `permissions text[]` column. Permissions are resolved into the claims cache at write time — zero runtime cost in RLS policies.
+  - New claims format: `{"<group-uuid>": {"roles": ["r1"], "permissions": ["p1", "p2"]}}` — separate namespaces prevent role/permission name collisions.
+  - New RLS helpers: `has_permission(group_id, permission)`, `has_any_permission(group_id, permissions[])`, `has_all_permissions(group_id, permissions[])`.
+  - New permission management RPCs (service_role only): `set_role_permissions()`, `grant_permission()`, `revoke_permission()`, `list_role_permissions()`.
+  - New `_build_user_claims(user_id)` internal helper: joins `members` + `roles` to build the full claims object with deduplicated, sorted permissions. Called by both sync triggers.
+  - New `_on_role_permissions_change()` trigger: fires after `roles.permissions` changes and rebuilds claims for all affected users.
 
 ### Migration from v4.x
 
@@ -37,7 +43,9 @@ There is no automated upgrade path. To migrate:
 ### New Examples
 
 - `examples/policies/quickstart.sql` — recommended starter RLS policies for `rbac.*` tables
-- `examples/setup/remove_public_wrappers.sql` — how to drop auto-created `public.*` wrappers
+- `examples/setup/create_public_wrappers.sql` — opt-in script to create `public.*` wrapper functions
+- `examples/setup/remove_public_wrappers.sql` — how to drop previously created `public.*` wrappers
+- `examples/policies/permission_centric.sql` — RLS example using dot-notation permissions via `has_permission()`
 
 ### Claims Cache Refactor (v5.0.0 update)
 
@@ -51,6 +59,8 @@ There is no automated upgrade path. To migrate:
 - `14_roles_array.test.sql` — roles array behavior tests (7 assertions)
 - `15_role_definitions.test.sql` — role validation and CRUD tests (8 assertions)
 - `16_auth_hook.test.sql` — custom_access_token_hook tests (5 assertions)
+- `17_permissions.test.sql` — permission CRUD RPCs, claims resolution, `has_permission()` for all auth tiers, deduplication (15 assertions)
+- `18_permission_access_control.test.sql` — EXECUTE grants on permission helpers and management RPCs (8 assertions)
 
 ## 4.5.0
 

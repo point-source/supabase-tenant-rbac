@@ -27,6 +27,9 @@ DROP FUNCTION IF EXISTS public.has_role(uuid, text);
 DROP FUNCTION IF EXISTS public.is_member(uuid);
 DROP FUNCTION IF EXISTS public.has_any_role(uuid, text[]);
 DROP FUNCTION IF EXISTS public.has_all_roles(uuid, text[]);
+DROP FUNCTION IF EXISTS public.has_permission(uuid, text);
+DROP FUNCTION IF EXISTS public.has_any_permission(uuid, text[]);
+DROP FUNCTION IF EXISTS public.has_all_permissions(uuid, text[]);
 
 -- Management RPCs
 DROP FUNCTION IF EXISTS public.create_group(text, jsonb, text[]);

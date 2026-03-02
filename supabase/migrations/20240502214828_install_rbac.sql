@@ -49,6 +49,7 @@ CREATE TABLE @extschema@.invites (
 CREATE TABLE @extschema@.roles (
     name        text        PRIMARY KEY,
     description text,
+    permissions text[]      NOT NULL DEFAULT '{}'::text[],
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 
@@ -208,6 +209,43 @@ BEGIN
 END;
 $function$;
 
+-- Build the complete claims JSONB for a user.
+-- Returns {"group-uuid": {"roles": ["r1"], "permissions": ["p1"]}, ...}
+-- Permissions are resolved from roles.permissions, deduplicated and sorted.
+CREATE OR REPLACE FUNCTION @extschema@._build_user_claims(p_user_id uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SET search_path = @extschema@
+AS $function$
+    SELECT coalesce(
+        jsonb_object_agg(
+            sub.gid,
+            jsonb_build_object(
+                'roles', sub.roles_arr,
+                'permissions', sub.perms_arr
+            )
+        ),
+        '{}'::jsonb
+    )
+    FROM (
+        SELECT
+            m.group_id::text AS gid,
+            to_jsonb(m.roles) AS roles_arr,
+            coalesce(
+                to_jsonb(
+                    (SELECT array_agg(DISTINCT perm ORDER BY perm)
+                     FROM @extschema@.roles r,
+                          unnest(r.permissions) AS perm
+                     WHERE r.name = ANY(m.roles))
+                ),
+                '[]'::jsonb
+            ) AS perms_arr
+        FROM @extschema@.members m
+        WHERE m.user_id = p_user_id
+    ) sub
+$function$;
+
 -- Trigger function: rebuild user's entire claims from members table
 -- Fires on INSERT/UPDATE/DELETE on members
 CREATE OR REPLACE FUNCTION @extschema@._sync_member_metadata()
@@ -235,14 +273,8 @@ BEGIN
         END IF;
     END IF;
 
-    -- Rebuild full claims for this user from the members table
-    SELECT coalesce(
-        jsonb_object_agg(m.group_id::text, to_jsonb(m.roles)),
-        '{}'::jsonb
-    )
-    INTO _new_groups
-    FROM @extschema@.members m
-    WHERE m.user_id = _user_id;
+    -- Rebuild full claims for this user
+    SELECT _build_user_claims(_user_id) INTO _new_groups;
 
     -- Upsert into user_claims (ON DELETE CASCADE handles deleted users automatically)
     INSERT INTO @extschema@.user_claims (user_id, claims)
@@ -255,6 +287,34 @@ BEGIN
 EXCEPTION WHEN foreign_key_violation THEN
     -- user_id no longer exists in auth.users (deleted concurrently) — skip silently
     IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+END;
+$function$;
+
+-- Trigger function: rebuild claims for all users holding a role whose
+-- permissions column was changed. Fires on UPDATE of roles.
+CREATE OR REPLACE FUNCTION @extschema@._on_role_permissions_change()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = @extschema@
+AS $function$
+DECLARE
+    _uid uuid;
+BEGIN
+    FOR _uid IN
+        SELECT DISTINCT user_id
+        FROM @extschema@.members
+        WHERE NEW.name = ANY(roles)
+    LOOP
+        INSERT INTO @extschema@.user_claims (user_id, claims)
+        VALUES (_uid, _build_user_claims(_uid))
+        ON CONFLICT (user_id) DO UPDATE SET claims = EXCLUDED.claims;
+    END LOOP;
+
+    RETURN NEW;
+
+EXCEPTION WHEN foreign_key_violation THEN
+    -- user_id deleted concurrently — skip silently
     RETURN NEW;
 END;
 $function$;
@@ -291,7 +351,7 @@ BEGIN
         IF _jwt_is_expired() THEN
             RAISE EXCEPTION 'invalid_jwt' USING HINT = 'jwt is expired or missing';
         END IF;
-        SELECT coalesce(get_claims()->group_id::text ? role, false) INTO retval;
+        SELECT coalesce(get_claims()->group_id::text->'roles' ? role, false) INTO retval;
         RETURN retval;
     ELSIF auth_role = 'anon' THEN
         RETURN false;
@@ -349,7 +409,7 @@ BEGIN
         IF _jwt_is_expired() THEN
             RAISE EXCEPTION 'invalid_jwt' USING HINT = 'jwt is expired or missing';
         END IF;
-        SELECT coalesce(get_claims()->group_id::text ?| roles, false) INTO retval;
+        SELECT coalesce(get_claims()->group_id::text->'roles' ?| roles, false) INTO retval;
         RETURN retval;
     ELSIF auth_role = 'anon' THEN
         RETURN false;
@@ -378,7 +438,7 @@ BEGIN
         IF _jwt_is_expired() THEN
             RAISE EXCEPTION 'invalid_jwt' USING HINT = 'jwt is expired or missing';
         END IF;
-        SELECT coalesce(get_claims()->group_id::text ?& roles, false) INTO retval;
+        SELECT coalesce(get_claims()->group_id::text->'roles' ?& roles, false) INTO retval;
         RETURN retval;
     ELSIF auth_role = 'anon' THEN
         RETURN false;
@@ -391,6 +451,102 @@ BEGIN
     END IF;
 END;
 $function$;
+
+-- Check if user has a specific resolved permission in a group
+CREATE OR REPLACE FUNCTION @extschema@.has_permission(group_id uuid, permission text)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SET search_path = @extschema@
+AS $function$
+DECLARE
+    auth_role text := auth.role();
+    retval bool;
+BEGIN
+    IF auth_role = 'authenticated' THEN
+        IF _jwt_is_expired() THEN
+            RAISE EXCEPTION 'invalid_jwt' USING HINT = 'jwt is expired or missing';
+        END IF;
+        SELECT coalesce(get_claims()->group_id::text->'permissions' ? permission, false) INTO retval;
+        RETURN retval;
+    ELSIF auth_role = 'anon' THEN
+        RETURN false;
+    ELSE
+        IF session_user = 'postgres' OR auth_role = 'service_role' THEN
+            RETURN true;
+        ELSE
+            RETURN false;
+        END IF;
+    END IF;
+END;
+$function$;
+
+REVOKE EXECUTE ON FUNCTION @extschema@.has_permission(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION @extschema@.has_permission(uuid, text) TO authenticated, anon, service_role;
+
+-- Check if user has ANY of the listed permissions in a group
+CREATE OR REPLACE FUNCTION @extschema@.has_any_permission(group_id uuid, permissions text[])
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SET search_path = @extschema@
+AS $function$
+DECLARE
+    auth_role text := auth.role();
+    retval bool;
+BEGIN
+    IF auth_role = 'authenticated' THEN
+        IF _jwt_is_expired() THEN
+            RAISE EXCEPTION 'invalid_jwt' USING HINT = 'jwt is expired or missing';
+        END IF;
+        SELECT coalesce(get_claims()->group_id::text->'permissions' ?| permissions, false) INTO retval;
+        RETURN retval;
+    ELSIF auth_role = 'anon' THEN
+        RETURN false;
+    ELSE
+        IF session_user = 'postgres' OR auth_role = 'service_role' THEN
+            RETURN true;
+        ELSE
+            RETURN false;
+        END IF;
+    END IF;
+END;
+$function$;
+
+REVOKE EXECUTE ON FUNCTION @extschema@.has_any_permission(uuid, text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION @extschema@.has_any_permission(uuid, text[]) TO authenticated, anon, service_role;
+
+-- Check if user has ALL of the listed permissions in a group
+CREATE OR REPLACE FUNCTION @extschema@.has_all_permissions(group_id uuid, permissions text[])
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SET search_path = @extschema@
+AS $function$
+DECLARE
+    auth_role text := auth.role();
+    retval bool;
+BEGIN
+    IF auth_role = 'authenticated' THEN
+        IF _jwt_is_expired() THEN
+            RAISE EXCEPTION 'invalid_jwt' USING HINT = 'jwt is expired or missing';
+        END IF;
+        SELECT coalesce(get_claims()->group_id::text->'permissions' ?& permissions, false) INTO retval;
+        RETURN retval;
+    ELSIF auth_role = 'anon' THEN
+        RETURN false;
+    ELSE
+        IF session_user = 'postgres' OR auth_role = 'service_role' THEN
+            RETURN true;
+        ELSE
+            RETURN false;
+        END IF;
+    END IF;
+END;
+$function$;
+
+REVOKE EXECUTE ON FUNCTION @extschema@.has_all_permissions(uuid, text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION @extschema@.has_all_permissions(uuid, text[]) TO authenticated, anon, service_role;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- MANAGEMENT RPCs
@@ -593,7 +749,7 @@ $function$;
 REVOKE EXECUTE ON FUNCTION @extschema@.accept_invite(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION @extschema@.accept_invite(uuid) TO authenticated;
 
--- Create a role definition. SECURITY INVOKER — RLS on roles table enforced.
+-- Create a role definition. SECURITY INVOKER — service_role only (app-author operation).
 CREATE OR REPLACE FUNCTION @extschema@.create_role(p_name text, p_description text DEFAULT NULL)
 RETURNS void
 LANGUAGE plpgsql
@@ -606,10 +762,10 @@ END;
 $function$;
 
 REVOKE EXECUTE ON FUNCTION @extschema@.create_role(text, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION @extschema@.create_role(text, text) TO authenticated;
+GRANT EXECUTE ON FUNCTION @extschema@.create_role(text, text) TO service_role;
 
 -- Delete a role definition. Refuses if any member uses this role.
--- SECURITY INVOKER — RLS on roles table enforced.
+-- SECURITY INVOKER — service_role only (app-author operation).
 CREATE OR REPLACE FUNCTION @extschema@.delete_role(p_name text)
 RETURNS void
 LANGUAGE plpgsql
@@ -633,25 +789,118 @@ END;
 $function$;
 
 REVOKE EXECUTE ON FUNCTION @extschema@.delete_role(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION @extschema@.delete_role(text) TO authenticated;
+GRANT EXECUTE ON FUNCTION @extschema@.delete_role(text) TO service_role;
 
--- List all role definitions. SECURITY INVOKER — RLS on roles table enforced.
+-- List all role definitions. SECURITY INVOKER — service_role only.
 CREATE OR REPLACE FUNCTION @extschema@.list_roles()
-RETURNS TABLE(name text, description text, created_at timestamptz)
+RETURNS TABLE(name text, description text, permissions text[], created_at timestamptz)
 LANGUAGE plpgsql
 STABLE
 SET search_path = @extschema@
 AS $function$
 BEGIN
     RETURN QUERY
-    SELECT r.name, r.description, r.created_at
+    SELECT r.name, r.description, r.permissions, r.created_at
     FROM @extschema@.roles r
     ORDER BY r.name;
 END;
 $function$;
 
 REVOKE EXECUTE ON FUNCTION @extschema@.list_roles() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION @extschema@.list_roles() TO authenticated;
+GRANT EXECUTE ON FUNCTION @extschema@.list_roles() TO service_role;
+
+-- Replace all permissions for a role. service_role only (app-author operation).
+-- Trigger on roles handles claims cache rebuild for all affected members.
+CREATE OR REPLACE FUNCTION @extschema@.set_role_permissions(
+    p_role_name   text,
+    p_permissions text[]
+)
+RETURNS void
+LANGUAGE plpgsql
+SET search_path = @extschema@
+AS $function$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM @extschema@.roles WHERE name = p_role_name) THEN
+        RAISE EXCEPTION 'Role "%" not found', p_role_name;
+    END IF;
+
+    UPDATE @extschema@.roles
+    SET permissions = coalesce(p_permissions, '{}'::text[])
+    WHERE name = p_role_name;
+END;
+$function$;
+
+REVOKE EXECUTE ON FUNCTION @extschema@.set_role_permissions(text, text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION @extschema@.set_role_permissions(text, text[]) TO service_role;
+
+-- Add a single permission to a role (idempotent). service_role only.
+CREATE OR REPLACE FUNCTION @extschema@.grant_permission(
+    p_role_name  text,
+    p_permission text
+)
+RETURNS void
+LANGUAGE plpgsql
+SET search_path = @extschema@
+AS $function$
+BEGIN
+    UPDATE @extschema@.roles
+    SET permissions = (
+        SELECT array_agg(DISTINCT p ORDER BY p)
+        FROM unnest(permissions || ARRAY[p_permission]) AS p
+    )
+    WHERE name = p_role_name;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Role "%" not found', p_role_name;
+    END IF;
+END;
+$function$;
+
+REVOKE EXECUTE ON FUNCTION @extschema@.grant_permission(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION @extschema@.grant_permission(text, text) TO service_role;
+
+-- Remove a single permission from a role (no-op if not present). service_role only.
+CREATE OR REPLACE FUNCTION @extschema@.revoke_permission(
+    p_role_name  text,
+    p_permission text
+)
+RETURNS void
+LANGUAGE plpgsql
+SET search_path = @extschema@
+AS $function$
+BEGIN
+    UPDATE @extschema@.roles
+    SET permissions = array_remove(permissions, p_permission)
+    WHERE name = p_role_name;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Role "%" not found', p_role_name;
+    END IF;
+END;
+$function$;
+
+REVOKE EXECUTE ON FUNCTION @extschema@.revoke_permission(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION @extschema@.revoke_permission(text, text) TO service_role;
+
+-- List permissions for one or all roles. service_role only.
+CREATE OR REPLACE FUNCTION @extschema@.list_role_permissions(p_role_name text DEFAULT NULL)
+RETURNS TABLE(role_name text, permission text)
+LANGUAGE plpgsql
+STABLE
+SET search_path = @extschema@
+AS $function$
+BEGIN
+    RETURN QUERY
+    SELECT r.name AS role_name, perm AS permission
+    FROM @extschema@.roles r,
+         unnest(r.permissions) AS perm
+    WHERE p_role_name IS NULL OR r.name = p_role_name
+    ORDER BY r.name, perm;
+END;
+$function$;
+
+REVOKE EXECUTE ON FUNCTION @extschema@.list_role_permissions(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION @extschema@.list_role_permissions(text) TO service_role;
 
 -- Supabase Auth Hook: injects group claims into JWT at token creation time.
 -- Register in config.toml: [auth.hook.custom_access_token]
@@ -703,7 +952,9 @@ GRANT USAGE ON SCHEMA @extschema@ TO authenticator, supabase_auth_admin;
 GRANT SELECT, INSERT, UPDATE, DELETE ON @extschema@.groups  TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON @extschema@.members TO authenticated;
 GRANT SELECT, UPDATE ON @extschema@.invites TO authenticated;
-GRANT SELECT, INSERT, DELETE ON @extschema@.roles TO authenticated;
+-- roles: authenticated can SELECT (for _validate_roles via INVOKER RPCs) but not mutate.
+-- All role/permission mutations go through service_role-only RPCs.
+GRANT SELECT ON @extschema@.roles TO authenticated;
 
 -- user_claims: authenticated needs INSERT/UPDATE for the trigger (runs as authenticated
 -- when fired by SECURITY INVOKER RPCs like add_member/remove_member/update_member_roles).
@@ -732,6 +983,12 @@ CREATE TRIGGER on_change_sync_member_metadata
     AFTER INSERT OR DELETE OR UPDATE ON @extschema@.members
     FOR EACH ROW EXECUTE FUNCTION @extschema@._sync_member_metadata();
 
+CREATE TRIGGER on_role_permissions_change
+    AFTER UPDATE ON @extschema@.roles
+    FOR EACH ROW
+    WHEN (OLD.permissions IS DISTINCT FROM NEW.permissions)
+    EXECUTE FUNCTION @extschema@._on_role_permissions_change();
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- POSTGREST HOOK
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -740,192 +997,21 @@ ALTER ROLE authenticator SET pgrst.db_pre_request TO '@extschema@.db_pre_request
 NOTIFY pgrst, 'reload config';
 
 -- ═══════════════════════════════════════════════════════════════════════════════
--- PUBLIC API WRAPPERS
--- When this extension is installed in a non-public schema (e.g. rbac), these
--- thin wrapper functions are created in the public schema so that:
---   1. PostgREST can discover them for RPC calls (supabase.rpc('has_role',...))
---   2. RLS policies can use unqualified names: USING (has_role(group_id, 'admin'))
+-- PUBLIC API WRAPPERS (OPT-IN)
+-- Public wrappers are NOT created automatically. To expose functions in the
+-- public schema for PostgREST RPC discovery or unqualified RLS policy calls,
+-- run the opt-in script after installation:
 --
--- These wrappers are tracked as extension members — DROP EXTENSION removes them.
--- To remove individual wrappers: DROP FUNCTION public.<name>(<signature>);
--- To remove all wrappers, see: examples/setup/remove_public_wrappers.sql
+--   examples/setup/create_public_wrappers.sql
+--
+-- Without wrappers, use schema-qualified calls everywhere:
+--   • RLS policies:  USING (rbac.has_role(group_id, 'owner'))
+--   • Client SDK:    supabase.schema('rbac').rpc('create_group', {...})
+--   • Auth hook URI: pg-functions://postgres/rbac/custom_access_token_hook
+--
+-- To remove previously created wrappers, see:
+--   examples/setup/remove_public_wrappers.sql
 -- ═══════════════════════════════════════════════════════════════════════════════
-
-DO $wrapper$ BEGIN
-IF '@extschema@' <> 'public' THEN
-
-    -- ── RLS / Claims helpers ────────────────────────────────────────────────
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.get_claims()
-        RETURNS jsonb LANGUAGE sql STABLE
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.get_claims() $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.has_role(group_id uuid, role text)
-        RETURNS boolean LANGUAGE sql STABLE
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.has_role($1, $2) $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.is_member(group_id uuid)
-        RETURNS boolean LANGUAGE sql STABLE
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.is_member($1) $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.has_any_role(group_id uuid, roles text[])
-        RETURNS boolean LANGUAGE sql STABLE
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.has_any_role($1, $2) $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.has_all_roles(group_id uuid, roles text[])
-        RETURNS boolean LANGUAGE sql STABLE
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.has_all_roles($1, $2) $f$
-    $sql$;
-
-    -- ── Management RPCs ─────────────────────────────────────────────────────
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.create_group(
-            p_name text, p_metadata jsonb DEFAULT '{}'::jsonb, p_creator_roles text[] DEFAULT ARRAY['owner']
-        )
-        RETURNS uuid LANGUAGE sql SECURITY DEFINER
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.create_group($1, $2, $3) $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.delete_group(p_group_id uuid)
-        RETURNS void LANGUAGE sql
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.delete_group($1) $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.add_member(
-            p_group_id uuid, p_user_id uuid, p_roles text[] DEFAULT '{}'::text[]
-        )
-        RETURNS uuid LANGUAGE sql
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.add_member($1, $2, $3) $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.remove_member(p_group_id uuid, p_user_id uuid)
-        RETURNS void LANGUAGE sql
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.remove_member($1, $2) $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.update_member_roles(
-            p_group_id uuid, p_user_id uuid, p_roles text[]
-        )
-        RETURNS void LANGUAGE sql
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.update_member_roles($1, $2, $3) $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.list_members(p_group_id uuid)
-        RETURNS TABLE(id uuid, user_id uuid, roles text[], metadata jsonb, created_at timestamptz)
-        LANGUAGE sql STABLE
-        SET search_path = @extschema@
-        AS $f$ SELECT * FROM @extschema@.list_members($1) $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.accept_invite(p_invite_id uuid)
-        RETURNS void LANGUAGE sql SECURITY DEFINER
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.accept_invite($1) $f$
-    $sql$;
-
-    -- ── Role management RPCs ────────────────────────────────────────────────
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.create_role(p_name text, p_description text DEFAULT NULL)
-        RETURNS void LANGUAGE sql
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.create_role($1, $2) $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.delete_role(p_name text)
-        RETURNS void LANGUAGE sql
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.delete_role($1) $f$
-    $sql$;
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.list_roles()
-        RETURNS TABLE(name text, description text, created_at timestamptz)
-        LANGUAGE sql STABLE
-        SET search_path = @extschema@
-        AS $f$ SELECT * FROM @extschema@.list_roles() $f$
-    $sql$;
-
-    -- ── Auth Hook wrapper ────────────────────────────────────────────────────
-
-    EXECUTE $sql$
-        CREATE OR REPLACE FUNCTION public.custom_access_token_hook(event jsonb)
-        RETURNS jsonb LANGUAGE sql STABLE
-        SET search_path = @extschema@
-        AS $f$ SELECT @extschema@.custom_access_token_hook($1) $f$
-    $sql$;
-
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.custom_access_token_hook(jsonb) FROM PUBLIC';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.custom_access_token_hook(jsonb) TO supabase_auth_admin';
-
-    -- ── REVOKE / GRANT on public wrappers ───────────────────────────────────
-
-    -- RLS helpers: accessible to authenticated (Supabase also grants to anon/service_role
-    -- on all public functions, which is fine — the functions handle auth tiers internally)
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.get_claims() FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.has_role(uuid, text) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.is_member(uuid) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.has_any_role(uuid, text[]) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.has_all_roles(uuid, text[]) FROM PUBLIC';
-
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.get_claims() TO authenticated, anon, service_role';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_role(uuid, text) TO authenticated, anon, service_role';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.is_member(uuid) TO authenticated, anon, service_role';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_any_role(uuid, text[]) TO authenticated, anon, service_role';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_all_roles(uuid, text[]) TO authenticated, anon, service_role';
-
-    -- Management RPCs: authenticated only
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.create_group(text, jsonb, text[]) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.delete_group(uuid) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.add_member(uuid, uuid, text[]) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.remove_member(uuid, uuid) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.update_member_roles(uuid, uuid, text[]) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.list_members(uuid) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.accept_invite(uuid) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.create_role(text, text) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.delete_role(text) FROM PUBLIC';
-    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.list_roles() FROM PUBLIC';
-
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.create_group(text, jsonb, text[]) TO authenticated';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.delete_group(uuid) TO authenticated';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.add_member(uuid, uuid, text[]) TO authenticated';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.remove_member(uuid, uuid) TO authenticated';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.update_member_roles(uuid, uuid, text[]) TO authenticated';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.list_members(uuid) TO authenticated';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.accept_invite(uuid) TO authenticated';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.create_role(text, text) TO authenticated';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.delete_role(text) TO authenticated';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.list_roles() TO authenticated';
-
-END IF;
-END $wrapper$;
 $_pgtle_$
   );
 

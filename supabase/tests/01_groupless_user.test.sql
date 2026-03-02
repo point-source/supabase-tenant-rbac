@@ -29,10 +29,10 @@ SELECT lives_ok(
 );
 
 -- Test 4: get_claims() returns correct claims when request.groups is a valid JSON object
-SELECT set_config('request.groups', '{"group-123":["admin","viewer"]}', true);
+SELECT set_config('request.groups', '{"group-123":{"roles":["admin","viewer"],"permissions":[]}}', true);
 SELECT is(
     rbac.get_claims(),
-    '{"group-123":["admin","viewer"]}'::jsonb,
+    '{"group-123":{"roles":["admin","viewer"],"permissions":[]}}'::jsonb,
     'get_claims() returns correct JSONB when request.groups is valid'
 );
 

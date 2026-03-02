@@ -30,7 +30,8 @@ examples/
   functions/
     add_user_by_email.sql      # Add user by email (superseded by add_member RPC)
   setup/
-    remove_public_wrappers.sql # How to drop auto-created public.* wrappers
+    create_public_wrappers.sql # Opt-in: create public.* wrappers for PostgREST discovery
+    remove_public_wrappers.sql # Drop previously created public.* wrappers
 
 supabase/
   config.toml                  # Local dev config (Postgres 15, port 54321)
@@ -100,7 +101,7 @@ When making changes to the core extension:
 ## Key Design Principles
 
 - **Private schema**: Tables in `@extschema@` (e.g. `rbac`), NOT in PostgREST's exposed schemas. All access via RPCs.
-- **Public wrappers**: When installed in non-`public` schema, thin `public.*` pass-through functions are auto-created for PostgREST RPC discovery and unqualified RLS policy calls.
+- **Public wrappers (opt-in)**: NOT auto-created. Run `examples/setup/create_public_wrappers.sql` to add thin `public.*` pass-throughs for PostgREST RPC discovery or unqualified RLS policy calls. Default install has zero public surface.
 - **Deny-all by default**: All tables have RLS enabled with zero policies. Consumers must add policies.
 - **Fresh claims on every request**: `db_pre_request` reads `rbac.user_claims` on each API call.
 - **Auth Hook**: `custom_access_token_hook` injects group claims into JWTs at token creation (optional, complements db_pre_request).
@@ -114,8 +115,8 @@ When making changes to the core extension:
 | `groups` | Tenants/orgs. Has `id`, `name`, `metadata`, timestamps |
 | `members` | One row per membership. `group_id`, `user_id`, `roles text[]`, `metadata` |
 | `invites` | Invite codes. `group_id`, `roles text[]`, `invited_by`, `expires_at` |
-| `roles` | Global role definitions. `name text PK`, `description`. Pre-seeded with `'owner'` |
-| `user_claims` | Claims cache. `user_id uuid PK`, `claims jsonb`. Auto-managed by trigger. |
+| `roles` | Global role definitions. `name text PK`, `description`, `permissions text[]`. Pre-seeded with `'owner'` |
+| `user_claims` | Claims cache. `user_id uuid PK`, `claims jsonb`. Format: `{"<gid>": {"roles": [...], "permissions": [...]}}`. Auto-managed by triggers. |
 
 ## Core Functions
 
@@ -124,6 +125,9 @@ When making changes to the core extension:
 - `is_member(group_id uuid)` → boolean
 - `has_any_role(group_id uuid, roles text[])` → boolean
 - `has_all_roles(group_id uuid, roles text[])` → boolean
+- `has_permission(group_id uuid, permission text)` → boolean
+- `has_any_permission(group_id uuid, permissions text[])` → boolean
+- `has_all_permissions(group_id uuid, permissions text[])` → boolean
 - `get_claims()` → jsonb
 
 ### Management RPCs
@@ -134,9 +138,15 @@ When making changes to the core extension:
 - `update_member_roles(p_group_id uuid, p_user_id uuid, p_roles text[])` [INVOKER]
 - `list_members(p_group_id uuid)` → table [INVOKER]
 - `accept_invite(p_invite_id uuid)` [DEFINER]
-- `create_role(p_name text, p_description text)` [INVOKER]
-- `delete_role(p_name text)` [INVOKER]
-- `list_roles()` → table [INVOKER]
+
+### Role & Permission RPCs (service_role only)
+- `create_role(p_name text, p_description text)` [service_role]
+- `delete_role(p_name text)` [service_role]
+- `list_roles()` → table [service_role]
+- `set_role_permissions(p_role_name text, p_permissions text[])` [service_role]
+- `grant_permission(p_role_name text, p_permission text)` [service_role]
+- `revoke_permission(p_role_name text, p_permission text)` [service_role]
+- `list_role_permissions(p_role_name text DEFAULT NULL)` → table [service_role]
 
 ### Auth Hook
 - `custom_access_token_hook(event jsonb)` → jsonb [INVOKER, supabase_auth_admin]
@@ -147,7 +157,16 @@ When making changes to the core extension:
 members (INSERT/UPDATE/DELETE)
     └── trigger: on_change_sync_member_metadata
         └── calls: _sync_member_metadata()  [SECURITY INVOKER]
+            └── calls: _build_user_claims(user_id)
+                └── resolves permissions from roles.permissions[]
             └── upserts: rbac.user_claims
+
+roles (UPDATE permissions[])
+    └── trigger: on_role_permissions_change  (WHEN permissions changed)
+        └── calls: _on_role_permissions_change()  [SECURITY INVOKER]
+            └── for each user holding the role:
+                └── calls: _build_user_claims(user_id)
+                └── upserts: rbac.user_claims
 
 Every PostgREST API request:
     └── db_pre_request()  [SECURITY INVOKER, registered on authenticator role]
@@ -160,10 +179,9 @@ Token creation (Supabase Auth Hook):
         └── injects: claims.app_metadata.groups into JWT
 
 RLS policies call:
-    └── has_role(group_id, role)
-    │   is_member(group_id)
-    │   has_any_role(group_id, roles[])
-    │   has_all_roles(group_id, roles[])
+    └── has_role / has_any_role / has_all_roles
+    │   has_permission / has_any_permission / has_all_permissions
+    │   is_member
         └── calls: get_claims()
             └── reads: request.groups (from db_pre_request)
             └── fallback: _get_user_groups() [SECURITY INVOKER] (Storage path)
@@ -174,5 +192,6 @@ RLS policies call:
 - **RLS policies required**: The extension ships with zero RLS policies. You MUST add policies on `rbac.groups`, `rbac.members`, `rbac.invites`, and `rbac.roles` or nothing will work. See `examples/policies/quickstart.sql`.
 - **Role validation**: All roles used in `create_group()`, `add_member()`, `update_member_roles()`, and invite `roles` arrays must exist in `rbac.roles`. Add them via `create_role()` or direct INSERT first.
 - **Storage requests bypass db_pre_request**: `get_claims()` falls back to `_get_user_groups()` which reads `rbac.user_claims` directly, so Storage RLS still works.
-- **user_claims is auto-managed**: Never write to `rbac.user_claims` directly. The trigger on `members` keeps it in sync. The table has RLS enabled (deny-all except for the defined roles).
+- **user_claims is auto-managed**: Never write to `rbac.user_claims` directly. Two triggers keep it in sync: `on_change_sync_member_metadata` (when memberships change) and `on_role_permissions_change` (when role permissions change). The table has RLS enabled (deny-all except for the defined roles).
+- **Permission management is service_role only**: `create_role`, `delete_role`, `list_roles`, `set_role_permissions`, `grant_permission`, `revoke_permission`, `list_role_permissions` are app-author operations intended for migrations/admin tooling. Not exposed via public wrappers.
 - **TLE backup/restore**: Supabase logical backups may fail to restore if `auth.users` isn't available. See [Issue #41](https://github.com/point-source/supabase-tenant-rbac/issues/41).

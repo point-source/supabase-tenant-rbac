@@ -54,8 +54,8 @@ SELECT is(
         '{"user_id":"eeeeeeee-0000-0000-0000-000000000001",
           "claims":{"sub":"eeeeeeee-0000-0000-0000-000000000001","app_metadata":{}}}'::jsonb
     ))->'claims'->'app_metadata'->'groups'->'eeeeeeee-0000-0000-0000-000000000002',
-    '["owner"]'::jsonb,
-    'hook injects correct group/role data into claims.app_metadata.groups'
+    '{"roles":["owner"],"permissions":[]}'::jsonb,
+    'hook injects correct group/role/permission data into claims.app_metadata.groups'
 );
 
 -- ── Test 3: hook with no memberships returns empty groups ──────────────────────

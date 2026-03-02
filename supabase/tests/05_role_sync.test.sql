@@ -40,7 +40,7 @@ VALUES ('dddddddd-0000-0000-0000-000000000002'::uuid,
         'dddddddd-0000-0000-0000-000000000001'::uuid, ARRAY['viewer']);
 
 SELECT is(
-    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'
+    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'->'roles'
      FROM rbac.user_claims WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid),
     '["viewer"]'::jsonb,
     'INSERT into members syncs roles array to rbac.user_claims'
@@ -53,7 +53,7 @@ WHERE group_id = 'dddddddd-0000-0000-0000-000000000002'::uuid
   AND user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid;
 
 SELECT ok(
-    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'
+    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'->'roles'
      FROM rbac.user_claims WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid)
     @> '["viewer","admin"]'::jsonb,
     'UPDATE on roles syncs both roles to user_claims'
@@ -62,7 +62,7 @@ SELECT ok(
 -- Test 3: roles array length matches after update
 SELECT is(
     jsonb_array_length(
-        (SELECT claims->'dddddddd-0000-0000-0000-000000000002'
+        (SELECT claims->'dddddddd-0000-0000-0000-000000000002'->'roles'
          FROM rbac.user_claims WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid)
     ),
     2,
@@ -76,7 +76,7 @@ WHERE group_id = 'dddddddd-0000-0000-0000-000000000002'::uuid
   AND user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid;
 
 SELECT is(
-    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'
+    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'->'roles'
      FROM rbac.user_claims WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid),
     '["admin"]'::jsonb,
     'UPDATE removing viewer leaves only admin in user_claims'
@@ -107,7 +107,7 @@ WHERE group_id = 'dddddddd-0000-0000-0000-000000000002'::uuid
   AND user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid;
 
 SELECT is(
-    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'
+    (SELECT claims->'dddddddd-0000-0000-0000-000000000002'->'roles'
      FROM rbac.user_claims WHERE user_id = 'dddddddd-0000-0000-0000-000000000001'::uuid),
     '["owner"]'::jsonb,
     'UPDATE replacing roles is reflected in user_claims'

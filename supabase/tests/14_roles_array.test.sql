@@ -42,7 +42,7 @@ SELECT is(
 
 -- ── Test 2: empty array syncs to empty JSONB array in user_claims ────────────
 SELECT is(
-    (SELECT claims->'aaaaaaaa-1111-0000-0000-000000000002'
+    (SELECT claims->'aaaaaaaa-1111-0000-0000-000000000002'->'roles'
      FROM rbac.user_claims WHERE user_id = 'aaaaaaaa-1111-0000-0000-000000000001'::uuid),
     '[]'::jsonb,
     'empty roles array syncs as empty JSONB array in user_claims'
@@ -55,7 +55,7 @@ WHERE group_id = 'aaaaaaaa-1111-0000-0000-000000000002'::uuid
   AND user_id = 'aaaaaaaa-1111-0000-0000-000000000001'::uuid;
 
 SELECT ok(
-    (SELECT claims->'aaaaaaaa-1111-0000-0000-000000000002'
+    (SELECT claims->'aaaaaaaa-1111-0000-0000-000000000002'->'roles'
      FROM rbac.user_claims WHERE user_id = 'aaaaaaaa-1111-0000-0000-000000000001'::uuid)
     @> '["viewer","editor"]'::jsonb,
     'non-empty roles array syncs to JSONB array in user_claims with both roles'
@@ -101,7 +101,7 @@ SELECT is(
 
 -- ── Test 7: user_claims matches the roles array ──────────────────────────────
 SELECT ok(
-    (SELECT claims->'aaaaaaaa-1111-0000-0000-000000000002'
+    (SELECT claims->'aaaaaaaa-1111-0000-0000-000000000002'->'roles'
      FROM rbac.user_claims WHERE user_id = 'aaaaaaaa-1111-0000-0000-000000000001'::uuid)
     @> '["admin","editor","viewer"]'::jsonb,
     'user_claims contains all merged roles'

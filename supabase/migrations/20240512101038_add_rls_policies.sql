@@ -10,7 +10,7 @@ on rbac.groups
 as permissive
 for select
 to authenticated
-using (is_member(id));
+using (rbac.is_member(id));
 
 create policy "Authenticated can create"
 on rbac.groups
@@ -24,15 +24,15 @@ on rbac.groups
 as permissive
 for update
 to authenticated
-using (has_role(id, 'group.update'::text))
-with check (has_role(id, 'group.update'::text));
+using (rbac.has_role(id, 'group.update'::text))
+with check (rbac.has_role(id, 'group.update'::text));
 
 create policy "Has delete permission"
 on rbac.groups
 as permissive
 for delete
 to authenticated
-using (has_role(id, 'group.delete'::text));
+using (rbac.has_role(id, 'group.delete'::text));
 
 -- ── members ─────────────────────────────────────────────────────────────────
 
@@ -41,29 +41,29 @@ on rbac.members
 as permissive
 for select
 to authenticated
-using (has_role(group_id, 'group_user.read'::text));
+using (rbac.has_role(group_id, 'group_user.read'::text));
 
 create policy "Has create permission"
 on rbac.members
 as permissive
 for insert
 to authenticated
-with check (has_role(group_id, 'group_user.create'::text));
+with check (rbac.has_role(group_id, 'group_user.create'::text));
 
 create policy "Has update permission"
 on rbac.members
 as permissive
 for update
 to authenticated
-using (has_role(group_id, 'group_user.update'::text))
-with check (has_role(group_id, 'group_user.update'::text));
+using (rbac.has_role(group_id, 'group_user.update'::text))
+with check (rbac.has_role(group_id, 'group_user.update'::text));
 
 create policy "Has delete permission"
 on rbac.members
 as permissive
 for delete
 to authenticated
-using (has_role(group_id, 'group_user.delete'::text));
+using (rbac.has_role(group_id, 'group_user.delete'::text));
 
 -- ── invites ─────────────────────────────────────────────────────────────────
 
@@ -72,8 +72,8 @@ on rbac.invites
 as permissive
 for all
 to authenticated
-using (has_role(group_id, 'group_user.invite'::text))
-with check (has_role(group_id, 'group_user.invite'::text));
+using (rbac.has_role(group_id, 'group_user.invite'::text))
+with check (rbac.has_role(group_id, 'group_user.invite'::text));
 
 -- ── roles ───────────────────────────────────────────────────────────────────
 

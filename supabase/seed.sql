@@ -58,19 +58,21 @@ VALUES
         '2023-04-03 16:40:17.36902-07'
     );
 
--- Add role definitions used in test data
-INSERT INTO rbac.roles (name, description) VALUES
-    ('group.update',       'Can update group metadata'),
-    ('group.delete',       'Can delete the group'),
-    ('group_user.create',  'Can add members to the group'),
-    ('group_user.read',    'Can view group members'),
-    ('group_user.update',  'Can update member roles'),
-    ('group_user.delete',  'Can remove group members'),
-    ('group_user.invite',  'Can create invites'),
-    ('group_data.create',  'Can create group data'),
-    ('group_data.read',    'Can read group data'),
-    ('group_data.update',  'Can update group data'),
-    ('group_data.delete',  'Can delete group data');
+-- Add role definitions used in test data.
+-- permissions[] reflects what each role grants — these are resolved into
+-- claims.permissions[] at cache time by _build_user_claims().
+INSERT INTO rbac.roles (name, description, permissions) VALUES
+    ('group.update',       'Can update group metadata',         ARRAY['group.update']),
+    ('group.delete',       'Can delete the group',              ARRAY['group.delete']),
+    ('group_user.create',  'Can add members to the group',      ARRAY['group_user.create']),
+    ('group_user.read',    'Can view group members',            ARRAY['group_user.read']),
+    ('group_user.update',  'Can update member roles',           ARRAY['group_user.update']),
+    ('group_user.delete',  'Can remove group members',          ARRAY['group_user.delete']),
+    ('group_user.invite',  'Can create invites',                ARRAY['group_user.invite']),
+    ('group_data.create',  'Can create group data',             ARRAY['group_data.create']),
+    ('group_data.read',    'Can read group data',               ARRAY['group_data.read']),
+    ('group_data.update',  'Can update group data',             ARRAY['group_data.update']),
+    ('group_data.delete',  'Can delete group data',             ARRAY['group_data.delete']);
 
 INSERT INTO
     rbac.groups (id, name, metadata, created_at)

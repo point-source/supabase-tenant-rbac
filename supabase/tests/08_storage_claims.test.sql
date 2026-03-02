@@ -34,7 +34,7 @@ INSERT INTO auth.users (
 INSERT INTO rbac.user_claims (user_id, claims)
 VALUES (
     'ffffffff-0000-0000-0000-000000000001'::uuid,
-    '{"ffffffff-0000-0000-0000-000000000002":["member","editor"]}'::jsonb
+    '{"ffffffff-0000-0000-0000-000000000002":{"roles":["editor","member"],"permissions":[]}}'::jsonb
 );
 
 -- Test 1: _get_user_groups() is callable without error
@@ -52,10 +52,10 @@ SELECT is(
 );
 
 -- Test 3: get_claims() returns request.groups when set (PostgREST path unchanged)
-SELECT set_config('request.groups', '{"ffffffff-0000-0000-0000-000000000002":["admin"]}', true);
+SELECT set_config('request.groups', '{"ffffffff-0000-0000-0000-000000000002":{"roles":["admin"],"permissions":[]}}', true);
 SELECT is(
     rbac.get_claims(),
-    '{"ffffffff-0000-0000-0000-000000000002":["admin"]}'::jsonb,
+    '{"ffffffff-0000-0000-0000-000000000002":{"roles":["admin"],"permissions":[]}}'::jsonb,
     'get_claims() returns request.groups when set (PostgREST path takes precedence)'
 );
 
@@ -74,7 +74,7 @@ SELECT set_config('request.jwt.claims',
     true);
 SELECT is(
     rbac._get_user_groups(),
-    '{"ffffffff-0000-0000-0000-000000000002":["member","editor"]}'::jsonb,
+    '{"ffffffff-0000-0000-0000-000000000002":{"roles":["editor","member"],"permissions":[]}}'::jsonb,
     '_get_user_groups() reads correct groups from rbac.user_claims for an authenticated user'
 );
 
@@ -83,11 +83,11 @@ SELECT set_config('request.jwt.claims',
     '{"role":"authenticated","sub":"ffffffff-0000-0000-0000-000000000001"}',
     true);
 SELECT set_config('request.groups',
-    '{"ffffffff-0000-0000-0000-000000000002":["cached-role"]}',
+    '{"ffffffff-0000-0000-0000-000000000002":{"roles":["cached-role"],"permissions":[]}}',
     true);
 SELECT is(
     rbac.get_claims(),
-    '{"ffffffff-0000-0000-0000-000000000002":["cached-role"]}'::jsonb,
+    '{"ffffffff-0000-0000-0000-000000000002":{"roles":["cached-role"],"permissions":[]}}'::jsonb,
     'get_claims() prefers request.groups over _get_user_groups() when both are available'
 );
 
@@ -98,7 +98,7 @@ SELECT set_config('request.jwt.claims',
 SELECT set_config('request.groups', '', true);
 SELECT is(
     rbac.get_claims(),
-    '{"ffffffff-0000-0000-0000-000000000002":["member","editor"]}'::jsonb,
+    '{"ffffffff-0000-0000-0000-000000000002":{"roles":["editor","member"],"permissions":[]}}'::jsonb,
     'get_claims() falls back to _get_user_groups() (fresh DB read) when request.groups is empty (Storage path)'
 );
 

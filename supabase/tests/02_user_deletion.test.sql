@@ -35,7 +35,7 @@ VALUES (
 
 -- Test 1: trigger correctly synced the roles to user_claims
 SELECT is(
-    (SELECT claims->'ffffffff-0000-0000-0000-000000000002'
+    (SELECT claims->'ffffffff-0000-0000-0000-000000000002'->'roles'
      FROM rbac.user_claims WHERE user_id = 'ffffffff-0000-0000-0000-000000000001'::uuid),
     '["member"]'::jsonb,
     'trigger synced roles to rbac.user_claims on INSERT'

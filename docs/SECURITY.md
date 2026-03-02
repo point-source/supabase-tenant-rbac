@@ -34,9 +34,11 @@ Only two functions are `SECURITY DEFINER`:
 All other functions are `SECURITY INVOKER`:
 - `db_pre_request()` — reads `rbac.user_claims` (extension-owned, not privileged)
 - `_get_user_groups()` — reads `rbac.user_claims` for the Storage fallback path
+- `_build_user_claims()` — reads `members` + `roles`, builds claims JSONB (trigger helper)
 - `_sync_member_metadata()` — writes `rbac.user_claims` (trigger-only)
+- `_on_role_permissions_change()` — writes `rbac.user_claims` for affected users (trigger-only)
 - `custom_access_token_hook()` — reads `rbac.user_claims` for JWT injection
-- All RLS helpers (`has_role`, `is_member`, `has_any_role`, `has_all_roles`, `get_claims`)
+- All RLS helpers (`has_role`, `is_member`, `has_any_role`, `has_all_roles`, `get_claims`, `has_permission`, `has_any_permission`, `has_all_permissions`)
 - All management RPCs (`delete_group`, `add_member`, `remove_member`, `update_member_roles`, `list_members`)
 
 By moving the claims cache from `auth.users` to `rbac.user_claims`, the three previously DEFINER functions no longer need elevated privileges to read or write `auth.users`.
@@ -45,7 +47,7 @@ By moving the claims cache from `auth.users` to `rbac.user_claims`, the three pr
 
 ## Auth Role Tiers
 
-The permission-checking functions (`has_role`, `is_member`, `has_any_role`, `has_all_roles`) handle four distinct execution contexts:
+The permission-checking functions (`has_role`, `is_member`, `has_any_role`, `has_all_roles`, `has_permission`, `has_any_permission`, `has_all_permissions`) handle four distinct execution contexts:
 
 | Context | `auth.role()` | `session_user` | Behavior |
 |---------|---------------|----------------|----------|
@@ -103,7 +105,9 @@ Every claims-checking function calls `_jwt_is_expired()` first. If the JWT is ex
 
 ## SECURITY INVOKER RPC Model
 
-Management RPCs (`delete_group`, `add_member`, `remove_member`, `update_member_roles`, `list_members`, `create_role`, `delete_role`, `list_roles`) are SECURITY INVOKER. They execute DML against `rbac.*` tables as the calling role (`authenticated`).
+Member management RPCs (`delete_group`, `add_member`, `remove_member`, `update_member_roles`, `list_members`) are SECURITY INVOKER. They execute DML against `rbac.*` tables as the calling role (`authenticated`).
+
+Role and permission management RPCs (`create_role`, `delete_role`, `list_roles`, `set_role_permissions`, `grant_permission`, `revoke_permission`, `list_role_permissions`) are **service_role only** — app-author operations intended for migrations and admin tooling, not end-user API calls.
 
 This means:
 - The `authenticated` role needs DML grants on `rbac.*` tables (shipped by the extension)
@@ -123,6 +127,14 @@ Example: An `add_member()` call succeeds only if the caller satisfies the INSERT
 `get_claims()` reads the `request.groups` session config key, which is set by `db_pre_request()`. Any PostgreSQL function can overwrite this key using `set_config('request.groups', ...)`. If a consumer creates an RPC function that writes user-controlled input to `request.groups`, an end user could spoof their group membership.
 
 **Mitigation**: Never write a function that passes user input to `set_config('request.groups', ...)`.
+
+### Role Permissions Change Trigger Cost
+
+**Risk level: Informational — no security impact**
+
+When `set_role_permissions()`, `grant_permission()`, or `revoke_permission()` changes a role's `permissions[]`, the `on_role_permissions_change` trigger rebuilds claims for every user holding that role. For widely-assigned roles (e.g., a `viewer` role held by thousands of users), this is an O(N) write operation.
+
+**Mitigation**: Permission changes are admin/migration operations, not per-request operations. Run them during low-traffic windows for large deployments. The WHEN condition (`OLD.permissions IS DISTINCT FROM NEW.permissions`) ensures the trigger only fires when permissions actually change, not on every role UPDATE.
 
 ### Inviter Permission Not Re-Checked at Acceptance
 
