@@ -20,7 +20,7 @@ I built this for my own personal use. It has not been audited by an independent 
 - PostgREST `db_pre_request` hook ensures every API request uses up-to-date claims, not stale JWT data
 - Optional `custom_access_token_hook` injects group claims into JWTs at token-creation time
 - Only 2 SECURITY DEFINER functions (`create_group`, `accept_invite`) — all other RPCs are SECURITY INVOKER
-- RLS helpers for writing policies: `has_role`, `is_member`, `has_any_role`, `has_all_roles`, `get_claims`
+- RLS helpers for writing policies: `has_role`, `is_member`, `has_any_role`, `has_all_roles`, `has_permission`, `has_any_permission`, `has_all_permissions`, `get_claims`
 - Invite system: create invite codes with specific roles; accept atomically via RPC
 - Deny-all RLS by default — you add policies that fit your application
 
@@ -68,11 +68,16 @@ All group and role administration happens through the management RPCs (`create_g
 
 ```json
 {
-  "c2aa61f5-d86b-45e8-9e6d-a5bae98cd530": ["admin", "owner"]
+  "c2aa61f5-d86b-45e8-9e6d-a5bae98cd530": {
+    "roles": ["admin", "owner"],
+    "permissions": ["group.update", "group_data.read"]
+  }
 }
 ```
 
-The top-level keys are group UUIDs; the values are arrays of role strings. This is stored in `rbac.user_claims.claims` — **not** in `auth.users`.
+The top-level keys are group UUIDs. Each value is an object with `roles` (the user's role strings) and `permissions` (the deduplicated union of all permissions held by those roles, resolved at write time). This is stored in `rbac.user_claims.claims` — **not** in `auth.users`.
+
+Permissions are resolved from the `roles.permissions[]` column when memberships or role definitions change, so `has_permission()` calls in RLS policies pay zero runtime cost — the work is done at write time by `_build_user_claims()`.
 
 On every PostgREST API request, `db_pre_request()` reads the current user's row from `user_claims` and stores it in `request.groups`. The RLS helper functions (`has_role`, `is_member`, etc.) read from this request context, so they always reflect the current state of `user_claims`, not stale JWT data.
 
@@ -97,7 +102,9 @@ For full architectural details, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.m
   - `has_role`, `is_member`, `has_any_role`, `has_all_roles`, `get_claims` (RLS helpers)
   - `create_group`, `delete_group`, `add_member`, `remove_member`, `update_member_roles`, `list_members` (group management)
   - `accept_invite` (invite acceptance)
-  - `create_role`, `delete_role`, `list_roles` (role management)
+  - `create_role`, `delete_role`, `list_roles` (role management — service_role only)
+  - `set_role_permissions`, `grant_permission`, `revoke_permission`, `list_role_permissions` (permission management — service_role only)
+  - `has_role`, `is_member`, `has_any_role`, `has_all_roles`, `has_permission`, `has_any_permission`, `has_all_permissions`, `get_claims` (RLS helpers)
   - `custom_access_token_hook` (auth hook)
   - `db_pre_request` (PostgREST hook — called automatically)
 
@@ -117,7 +124,7 @@ It is strongly recommended to install in a dedicated private schema (not `public
 create extension "pointsource-supabase_rbac" schema rbac version "5.0.0";
 ```
 
-When installed in a non-`public` schema, thin public wrapper functions are created automatically so that PostgREST can discover the RPCs and RLS policies can use unqualified names (e.g., `has_role(...)` rather than `rbac.has_role(...)`).
+By default, the installation has **zero public surface** — no functions are created in `public`. To expose functions for PostgREST RPC discovery or to use unqualified names in RLS policies (e.g., `has_role(...)` instead of `rbac.has_role(...)`), run `examples/setup/create_public_wrappers.sql` after installation. To remove them later, run `examples/setup/remove_public_wrappers.sql`.
 
 ### Security / RLS
 
@@ -148,14 +155,14 @@ All tables are created in the extension schema (e.g., `rbac`). They are **not** 
 | `groups` | `id`, `name`, `metadata` | Tenants / organizations |
 | `members` | `group_id`, `user_id`, `roles text[]`, `metadata` | One row per user-group membership; `roles` is an array of role strings |
 | `invites` | `group_id`, `roles text[]`, `invited_by`, `expires_at` | Invite codes; `user_id` and `accepted_at` are populated on acceptance |
-| `roles` | `name` (PK), `description` | Role definitions; pre-seeded with `'owner'`; all role assignments are validated against this table |
-| `user_claims` | `user_id` (PK), `claims jsonb` | Auto-managed claims cache; **never write to this table directly** |
+| `roles` | `name` (PK), `description`, `permissions text[]` | Role definitions; pre-seeded with `'owner'`; all role assignments are validated against this table; `permissions` is the set of permission strings granted to holders of this role |
+| `user_claims` | `user_id` (PK), `claims jsonb` | Auto-managed claims cache; format: `{"<group-uuid>": {"roles": [...], "permissions": [...]}}`. **Never write to this table directly** |
 
 > **Note:** `user_claims` is automatically kept in sync by a trigger on `members`. Writing to it directly will cause incorrect behavior.
 
 ## How to use
 
-1. **Define your roles** — add custom roles using `create_role()`. The `'owner'` role is pre-seeded and used as the default for `create_group()`.
+1. **Define your roles** — add custom roles using `create_role()`. The `'owner'` role is pre-seeded and used as the default for `create_group()`. Optionally assign permissions to roles using `set_role_permissions()` or `grant_permission()` (service_role only).
 2. **Create a group** — call `create_group('My Group')`. The caller is automatically added as a member with the `owner` role.
 3. **Add members** — call `add_member(group_id, user_id, ARRAY['viewer'])` to add a user with one or more roles.
 4. **Write RLS policies** — use the built-in helpers (`has_role`, `is_member`, `has_any_role`) in your policies on application tables.
@@ -169,7 +176,7 @@ These are the functions you use in RLS policies. They read claims from `request.
 
 ##### `get_claims() → jsonb`
 
-Returns the current user's group/role claims as a jsonb object (`{ "group-uuid": ["role1", "role2"] }`). Returns `{}` for unauthenticated or groupless users.
+Returns the current user's group claims as a jsonb object (`{ "group-uuid": {"roles": ["role1"], "permissions": ["perm1"]} }`). Returns `{}` for unauthenticated or groupless users.
 
 ##### `is_member(group_id uuid) → boolean`
 
@@ -187,7 +194,19 @@ Returns `true` if the current user has **at least one** of the specified roles. 
 
 Returns `true` if the current user has **all** of the specified roles.
 
-All four functions return `true` for `service_role` and `postgres` (superuser bypass), `false` for `anon`, and raise `invalid_jwt` for expired JWTs when called as `authenticated`.
+##### `has_permission(group_id uuid, permission text) → boolean`
+
+Returns `true` if the current user has the specified permission in the group. Permissions are pre-resolved into the claims cache from `roles.permissions[]` — no extra query at runtime.
+
+##### `has_any_permission(group_id uuid, permissions text[]) → boolean`
+
+Returns `true` if the current user has **at least one** of the specified permissions.
+
+##### `has_all_permissions(group_id uuid, permissions text[]) → boolean`
+
+Returns `true` if the current user has **all** of the specified permissions.
+
+All seven helper functions return `true` for `service_role` and `postgres` (superuser bypass), `false` for `anon`, and raise `invalid_jwt` for expired JWTs when called as `authenticated`.
 
 #### Management RPCs
 
@@ -223,17 +242,39 @@ Marks the invite as accepted, validates it is not expired or already used, then 
 
 #### Role Management RPCs
 
+These are app-author operations intended for use in migrations or admin tooling. All are **service_role only** and are not exposed via public wrapper functions.
+
 ##### `create_role(p_name text, p_description text DEFAULT NULL)`
 
-Inserts a new role into the `roles` table. Requires an RLS INSERT policy on `roles`.
+Inserts a new role into the `roles` table.
 
 ##### `delete_role(p_name text)`
 
-Deletes a role. Refuses if any member currently has this role assigned. Requires an RLS DELETE policy on `roles`.
+Deletes a role. Refuses if any member currently has this role assigned.
 
 ##### `list_roles() → table`
 
-Returns `(name, description, created_at)` for all defined roles. Requires an RLS SELECT policy on `roles`.
+Returns `(name, description, permissions, created_at)` for all defined roles.
+
+#### Permission Management RPCs
+
+Also **service_role only**. Permissions are stored in the `roles.permissions[]` column and resolved into the claims cache at write time.
+
+##### `set_role_permissions(p_role_name text, p_permissions text[])`
+
+Replaces the permissions array for a role entirely. Triggers a rebuild of claims for all users holding this role.
+
+##### `grant_permission(p_role_name text, p_permission text)`
+
+Appends a single permission to a role's permissions array (no-op if already present).
+
+##### `revoke_permission(p_role_name text, p_permission text)`
+
+Removes a single permission from a role's permissions array.
+
+##### `list_role_permissions(p_role_name text DEFAULT NULL) → table`
+
+Returns `(role_name, permission)` rows. Pass a role name to filter to one role, or omit for all roles.
 
 #### Auth Hook
 
@@ -337,14 +378,14 @@ Notice that while most of these permissions seem to follow a naming convention o
 
 Furthermore, the `group_data.*` permissions do not reference any table and are there to serve as general-purpose permissions for RLS policies across multiple tables of data that might be generated or consumed by group members. It is not necessary to create general-purpose permissions like this, but it can be useful if you have a lot of tables that you want to apply the same permissions to.
 
-To improve performance, you can also combine some of these permissions into a single role, or check multiple at once using `has_any_role()`:
+To improve performance when using dot-notation permission strings, consider using the dedicated permission helpers instead:
 
 ```sql
 -- Check if user has any write permission for group data
-using (has_any_role(group_id, ARRAY['group_data.create', 'group_data.all']))
+using (has_any_permission(group_id, ARRAY['group_data.create', 'group_data.all']))
 ```
 
-This is more efficient than chaining multiple `has_role()` checks. Make sure to check for combined permissions first, since they are more likely to shortcut the search.
+`has_permission()`, `has_any_permission()`, and `has_all_permissions()` read pre-resolved permissions directly from the claims cache — no iteration through role strings at runtime. You can also still use `has_any_role()` if you prefer to check by role name.
 
 You can [view the full policies here](https://github.com/point-source/supabase-tenant-rbac/tree/main/examples/policies/permission_centric.sql).
 
@@ -488,6 +529,7 @@ See `examples/policies/storage_rls.sql` for Storage-specific RLS policy examples
 | [`examples/triggers/sync_user_into_group_role.sql`](examples/triggers/sync_user_into_group_role.sql) | Keep user email/name synced into `members.metadata` |
 | [`examples/triggers/on_delete_user_roles.sql`](examples/triggers/on_delete_user_roles.sql) | Cascade deletes via user_roles view |
 | [`examples/views/user_roles.sql`](examples/views/user_roles.sql) | Flattened view: one row per user-group-role |
-| [`examples/setup/remove_public_wrappers.sql`](examples/setup/remove_public_wrappers.sql) | How to drop the auto-created `public.*` wrapper functions |
+| [`examples/setup/create_public_wrappers.sql`](examples/setup/create_public_wrappers.sql) | Opt-in: create `public.*` wrapper functions for PostgREST discovery or unqualified RLS calls |
+| [`examples/setup/remove_public_wrappers.sql`](examples/setup/remove_public_wrappers.sql) | Drop previously created `public.*` wrapper functions |
 | [`examples/triggers/auto_group_owner.sql`](examples/triggers/auto_group_owner.sql) | _(Superseded by `create_group()` RPC)_ Auto-assign owner on group create |
 | [`examples/functions/add_user_by_email.sql`](examples/functions/add_user_by_email.sql) | _(Superseded by `add_member()` RPC)_ Add user by email |
