@@ -105,16 +105,16 @@ CREATE POLICY "Owners can delete invites"
 -- ─────────────────────────────────────────────────────────────────────────
 -- rbac.roles
 -- ─────────────────────────────────────────────────────────────────────────
-
--- All authenticated users can read role definitions
-CREATE POLICY "Authenticated users can read roles"
-    ON rbac.roles FOR SELECT
-    TO authenticated
-    USING (true);
+-- Role definitions (name, description, permissions[]) are hidden from
+-- authenticated users by default — they are an admin/migration concern.
+-- If your app needs users to browse role definitions, opt in explicitly:
+--
+--   GRANT SELECT ON rbac.roles TO authenticated;
+--   CREATE POLICY "Authenticated users can read roles"
+--       ON rbac.roles FOR SELECT TO authenticated USING (true);
 
 -- Only service_role can manage role definitions (via create_role/delete_role RPCs
 -- called from server-side code or the Supabase dashboard).
--- If you want authenticated users to manage roles, replace 'service_role' below.
 CREATE POLICY "Service role can manage roles"
     ON rbac.roles FOR ALL
     TO service_role

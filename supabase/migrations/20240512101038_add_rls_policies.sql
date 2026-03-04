@@ -72,13 +72,9 @@ using (rbac.has_permission(group_id, 'group_user.invite'::text))
 with check (rbac.has_permission(group_id, 'group_user.invite'::text));
 
 -- ── roles ───────────────────────────────────────────────────────────────────
-
-create policy "Authenticated can read roles"
-on rbac.roles
-as permissive
-for select
-to authenticated
-using (true);
+-- Role definitions are hidden from authenticated users by default (v5.2.1+).
+-- authenticated has no table-level SELECT on rbac.roles (revoked by extension).
+-- To opt-in: GRANT SELECT ON rbac.roles TO authenticated; (plus a policy below).
 
 create policy "Service role can manage roles"
 on rbac.roles

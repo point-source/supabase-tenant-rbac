@@ -2,12 +2,13 @@
 
 ## What This Project Is
 
-A PostgreSQL TLE (Trusted Language Extension) that provides multi-tenant RBAC for Supabase projects. Distributed via [database.dev](https://database.dev/pointsource/supabase_rbac) as `pointsource-supabase_rbac`. Current version: **5.2.0**.
+A PostgreSQL TLE (Trusted Language Extension) that provides multi-tenant RBAC for Supabase projects. Distributed via [database.dev](https://database.dev/pointsource/supabase_rbac) as `pointsource-supabase_rbac`. Current version: **5.2.1**.
 
 ## Repository Layout
 
 ```
-supabase_rbac--5.2.0.sql       # Current extension full install script (READ THIS FIRST)
+supabase_rbac--5.2.1.sql       # Current extension full install script (READ THIS FIRST)
+supabase_rbac--5.2.0--5.2.1.sql # Upgrade path: 5.2.0 → 5.2.1
 supabase_rbac--5.1.0--5.2.0.sql # Upgrade path: 5.1.0 → 5.2.0
 supabase_rbac--X.Y.Z.sql       # Prior version install scripts (keep for reference)
 supabase_rbac.control          # Extension metadata (default_version lives here)
@@ -105,7 +106,7 @@ When making changes to the core extension:
 - **Fresh claims on every request**: `db_pre_request` reads `rbac.user_claims` on each API call.
 - **Auth Hook**: `custom_access_token_hook` injects group claims into JWTs at token creation (optional, complements db_pre_request).
 - **Role validation**: All role assignments validated against the `roles` table.
-- **SECURITY INVOKER by default**: Management RPCs respect RLS. Only `create_group` and `accept_invite` are DEFINER (bootstrap operations). The three trigger functions (`_sync_member_metadata`, `_sync_member_permission`, `_on_role_permissions_change`) are also DEFINER so they can write to `user_claims` without requiring INSERT/UPDATE grants on `authenticated`.
+- **SECURITY INVOKER by default**: Management RPCs respect RLS. Only `create_group` and `accept_invite` are DEFINER (bootstrap operations). The three trigger functions (`_sync_member_metadata`, `_sync_member_permission`, `_on_role_permissions_change`) are also DEFINER so they can write to `user_claims` without requiring INSERT/UPDATE grants on `authenticated`. `_validate_roles()` is also DEFINER (v5.2.1) so INVOKER RPCs can validate role names without requiring `authenticated` to have SELECT on `rbac.roles`. Total: 6 DEFINER functions.
 
 ## Core Tables (in `@extschema@`)
 

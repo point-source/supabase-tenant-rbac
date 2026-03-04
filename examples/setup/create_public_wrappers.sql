@@ -81,7 +81,7 @@ IF 'rbac' <> 'public' THEN
         CREATE OR REPLACE FUNCTION public.create_group(
             p_name text, p_metadata jsonb DEFAULT '{}'::jsonb, p_creator_roles text[] DEFAULT ARRAY['owner']
         )
-        RETURNS uuid LANGUAGE sql SECURITY DEFINER
+        RETURNS uuid LANGUAGE sql
         SET search_path = rbac
         AS $f$ SELECT rbac.create_group($1, $2, $3) $f$
     $sql$;
@@ -128,7 +128,7 @@ IF 'rbac' <> 'public' THEN
 
     EXECUTE $sql$
         CREATE OR REPLACE FUNCTION public.accept_invite(p_invite_id uuid)
-        RETURNS void LANGUAGE sql SECURITY DEFINER
+        RETURNS void LANGUAGE sql
         SET search_path = rbac
         AS $f$ SELECT rbac.accept_invite($1) $f$
     $sql$;

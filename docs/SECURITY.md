@@ -27,24 +27,41 @@ All functions use `SET search_path = @extschema@` to prevent search_path injecti
 All management RPCs (`create_group`, `add_member`, `update_member_roles`, `accept_invite`) validate role assignments against the `roles` table. Free-text role strings from v4.x are replaced by a validated vocabulary.
 
 ### 5. Minimal SECURITY DEFINER Surface
-Five functions are `SECURITY DEFINER`:
+Six functions are `SECURITY DEFINER`:
 - `create_group()` — bootstraps membership when no prior RLS-satisfying row exists
 - `accept_invite()` — writes invites + members atomically, bypassing RLS
 - `_sync_member_metadata()` — trigger function that writes `rbac.user_claims`; runs as function owner (postgres) to avoid requiring `authenticated` INSERT/UPDATE on user_claims
 - `_sync_member_permission()` — trigger function that writes `rbac.user_claims`; same rationale
 - `_on_role_permissions_change()` — trigger function that writes `rbac.user_claims` for all affected users; same rationale
+- `_validate_roles()` — internal helper that reads `rbac.roles.name` to validate a role array; made DEFINER (v5.2.1) so INVOKER management RPCs can validate roles without the caller needing SELECT on `rbac.roles`
 
-The three trigger functions (`RETURNS trigger`) cannot be called directly via RPC or REST — only the database trigger mechanism can invoke them. SECURITY DEFINER on trigger functions does not expand the callable API surface.
+The three trigger functions (`RETURNS trigger`) cannot be called directly via RPC or REST — only the database trigger mechanism can invoke them. SECURITY DEFINER on trigger functions does not expand the callable API surface. Similarly, `_validate_roles` has `REVOKE EXECUTE FROM PUBLIC` — no external caller has EXECUTE on it.
 
 All other functions are `SECURITY INVOKER`:
 - `db_pre_request()` — reads `rbac.user_claims` (extension-owned, not privileged)
 - `_get_user_groups()` — reads `rbac.user_claims` for the Storage fallback path
-- `_build_user_claims()` — reads `members` + `roles`, builds claims JSONB (trigger helper)
+- `_build_user_claims()` — reads `members` + `roles`, builds claims JSONB (trigger helper; EXECUTE revoked from PUBLIC)
 - `custom_access_token_hook()` — reads `rbac.user_claims` for JWT injection
 - All RLS helpers (`has_role`, `is_member`, `has_any_role`, `has_all_roles`, `get_claims`, `has_permission`, `has_any_permission`, `has_all_permissions`)
 - All management RPCs (`delete_group`, `add_member`, `remove_member`, `update_member_roles`, `list_members`, `create_invite`, `delete_invite`)
 
 By moving the claims cache from `auth.users` to `rbac.user_claims` (v5.0.0) and making the three write triggers SECURITY DEFINER (v5.2.0), the `authenticated` role no longer needs INSERT/UPDATE on `user_claims`.
+
+### 6. Internal Helpers Locked Down (v5.2.1)
+All five `_`-prefixed internal helper functions have `REVOKE EXECUTE FROM PUBLIC`. Selective re-grants:
+- `_get_user_groups()` → `authenticated, service_role` (Storage RLS fallback via `get_claims()`)
+- `_jwt_is_expired()` → `authenticated, anon, service_role` (called by all RLS helpers)
+- `_build_user_claims(uuid)` — no re-grant (DEFINER trigger functions only)
+- `_validate_roles(text[])` — no re-grant (DEFINER itself; trigger-like internal use)
+- `_set_updated_at()` — no re-grant (trigger mechanism only, returns `trigger`)
+
+### 7. Role Definitions Hidden from Authenticated (v5.2.1)
+`authenticated` has no table-level `SELECT` on `rbac.roles`. The role vocabulary (names, descriptions, `permissions[]` arrays) is an admin/migration concern, not end-user data. App-authors who want users to browse role definitions must explicitly opt in:
+```sql
+GRANT SELECT ON rbac.roles TO authenticated;
+CREATE POLICY "Authenticated users can read roles"
+    ON rbac.roles FOR SELECT TO authenticated USING (true);
+```
 
 ---
 
@@ -67,7 +84,7 @@ Every claims-checking function calls `_jwt_is_expired()` first. If the JWT is ex
 
 ---
 
-## SECURITY DEFINER Function Analysis
+## SECURITY DEFINER Function Analysis (6 Functions)
 
 ### `db_pre_request()` — SECURITY INVOKER
 - Runs as `authenticator` (the PostgREST session role).
@@ -81,6 +98,12 @@ Every claims-checking function calls `_jwt_is_expired()` first. If the JWT is ex
 - Runs as the function owner (`postgres`) regardless of which role fired the triggering DML.
 - **Immutability enforcement**: Raises exception if `user_id` or `group_id` is changed on UPDATE.
 - **Why DEFINER**: Allows the authenticated role to be stripped of INSERT/UPDATE on `user_claims`, closing the claims forgery vector (any authenticated user could previously forge claims for any `user_id`).
+
+### `_validate_roles()` — SECURITY DEFINER (v5.2.1)
+- Reads `roles.name` from `rbac.roles` to validate a role name array.
+- **Why DEFINER**: `authenticated` no longer has `SELECT` on `rbac.roles` (v5.2.1). DEFINER allows INVOKER management RPCs (`add_member`, `update_member_roles`, `create_invite`) to validate role names without requiring the caller to have table access.
+- **EXECUTE revoked from PUBLIC**: No external caller has EXECUTE. Only DEFINER callers (the management RPCs, which call `_validate_roles` from within their bodies) can invoke it.
+- **No side effects**: Reads only `roles.name`; no writes, no user-controllable output beyond the exception message listing undefined role names (which the caller already supplied).
 
 ### `_get_user_groups()` — SECURITY INVOKER
 - Reads `claims` from `rbac.user_claims` for `auth.uid()`. Returns `'{}'` for unauthenticated/groupless users.

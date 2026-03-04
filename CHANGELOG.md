@@ -1,5 +1,43 @@
 # Changelog
 
+## 5.2.1
+
+### Security Hardening
+
+- **Internal helper functions locked down (F1, MEDIUM)** — Added `REVOKE EXECUTE FROM PUBLIC` on all five `_`-prefixed internal functions (`_build_user_claims`, `_get_user_groups`, `_validate_roles`, `_jwt_is_expired`, `_set_updated_at`). Previously any database role (including `authenticated` and `anon`) could call these directly. Selective re-grants:
+  - `_get_user_groups`: re-granted to `authenticated, service_role` (called by `get_claims()` Storage fallback)
+  - `_jwt_is_expired`: re-granted to `authenticated, anon, service_role` (called by all RLS helpers)
+  - `_build_user_claims`, `_validate_roles`, `_set_updated_at`: no re-grant (DEFINER callers only or trigger mechanism only)
+
+- **`rbac.roles` hidden from authenticated (F6, MEDIUM)** — Removed `GRANT SELECT ON rbac.roles TO authenticated`. The role/permission vocabulary is now inaccessible to end users by default. App-authors who want users to browse role definitions must explicitly `GRANT SELECT ON rbac.roles TO authenticated` and add an RLS policy. This prevents information disclosure (roles, descriptions, and permissions[] arrays) to arbitrary authenticated users.
+
+- **`_validate_roles()` made SECURITY DEFINER** — Required so INVOKER management RPCs (`add_member`, `update_member_roles`, `create_invite`) can validate role names against `rbac.roles` even though `authenticated` no longer has SELECT on that table. Pure internal validator: reads only `roles.name`, no writes, no user-controllable output beyond the exception message the caller already knows. This is the 6th DEFINER function in the extension.
+
+### Example File Fixes
+
+- **`create_public_wrappers.sql` (F2)** — Removed `SECURITY DEFINER` from `public.create_group` and `public.accept_invite` wrappers. They delegate to the already-DEFINER `rbac.*` originals via schema-qualified calls, so `SECURITY INVOKER` is sufficient and reduces privilege surface in the public schema.
+
+- **`custom_table_isolation.sql` (F3)** — Option B ("Permission-centric policies") now correctly uses `has_permission()` instead of `has_role()`. Using `has_role('project.read')` checks role names, not resolved permission strings — which would require users to define a role named `project.read` rather than a permission.
+
+- **`remove_public_wrappers.sql` (F4)** — Removed stale `DROP FUNCTION` entries for `public.create_role`, `public.delete_role`, `public.list_roles` which were never created by `create_public_wrappers.sql`. Fixed header comment (wrappers are opt-in since v5.0.0, not auto-created).
+
+- **`hardened_setup.sql` (F5)** — Added `rbac.member_permissions` and `rbac.user_claims` to the revoke/re-grant pattern. Updated `rbac.roles` section to reflect that `authenticated` no longer has SELECT by default in v5.2.1+.
+
+- **`quickstart.sql`** — Removed the `"Authenticated users can read roles"` SELECT policy. Added opt-in instructions as a comment.
+
+### New Tests
+
+- `24_cross_tenant_isolation.test.sql` — 9 assertions: privilege check (authenticated lacks SELECT on rbac.roles), cross-group row isolation for groups/members/invites/member_permissions, user_claims row isolation, zero-membership user isolation, viewer self-promotion blocked via RLS.
+- `25_anon_blocked.test.sql` — 8 assertions: anon lacks SELECT on all 6 rbac tables, anon lacks EXECUTE on create_group and add_member.
+- `26_negative_execute_grants.test.sql` — 14 assertions: anon lacks EXECUTE on 5 management RPCs; authenticated lacks EXECUTE on 4 service_role-only RPCs; anon/authenticated lack EXECUTE on `_build_user_claims`, `_validate_roles`; anon lacks EXECUTE on `_get_user_groups`.
+
+### Upgrade Path
+
+Apply `supabase_rbac--5.2.0--5.2.1.sql` to an existing v5.2.0 deployment. After upgrading:
+1. Drop the now-incorrect RLS policy if present: `DROP POLICY IF EXISTS "Authenticated can read roles" ON rbac.roles;`
+2. Verify `SELECT * FROM rbac.roles` is denied when running as an authenticated user.
+3. Verify management RPCs (`add_member`, `create_invite`) still validate roles correctly.
+
 ## 5.2.0
 
 ### Security Hardening

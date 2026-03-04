@@ -1,9 +1,10 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- Remove Auto-Created Public Wrappers
+-- Remove Opt-In Public Wrappers
 -- ═══════════════════════════════════════════════════════════════════════════
--- When supabase_rbac is installed in a non-public schema (e.g. rbac), the
--- extension automatically creates thin wrapper functions in the public schema.
--- These wrappers enable:
+-- If you previously ran examples/setup/create_public_wrappers.sql, use this
+-- script to drop the public.* wrapper functions.
+--
+-- Public wrappers enable:
 --   1. PostgREST RPC discovery (supabase.rpc('has_role', ...))
 --   2. Unqualified function calls in RLS policies (USING (has_role(...)))
 --
@@ -44,11 +45,6 @@ DROP FUNCTION IF EXISTS public.delete_invite(uuid);
 DROP FUNCTION IF EXISTS public.grant_member_permission(uuid, uuid, text);
 DROP FUNCTION IF EXISTS public.revoke_member_permission(uuid, uuid, text);
 DROP FUNCTION IF EXISTS public.list_member_permissions(uuid, uuid);
-
--- Role management RPCs
-DROP FUNCTION IF EXISTS public.create_role(text, text);
-DROP FUNCTION IF EXISTS public.delete_role(text);
-DROP FUNCTION IF EXISTS public.list_roles();
 
 -- Auth Hook wrapper
 -- NOTE: If you drop this wrapper, update config.toml to point the auth hook

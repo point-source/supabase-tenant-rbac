@@ -61,7 +61,9 @@ using (has_role(group_id, 'owner'));
 -- Option B: Permission-centric policies
 --
 -- Use this when you want fine-grained control via dot-notation permission strings
--- in the members.roles array.
+-- resolved from roles.permissions[] (the ORBAC model). Permissions are stored on
+-- role definitions and merged into claims at cache time. Use has_permission() —
+-- not has_role() — to check permission strings like 'project.read'.
 -- ──────────────────────────────────────────────────────────────────────────────
 
 create policy "Has project read permission"
@@ -69,26 +71,26 @@ on "public"."projects"
 as permissive
 for select
 to authenticated
-using (has_role(group_id, 'project.read'));
+using (has_permission(group_id, 'project.read'));
 
 create policy "Has project write permission (insert)"
 on "public"."projects"
 as permissive
 for insert
 to authenticated
-with check (has_role(group_id, 'project.write'));
+with check (has_permission(group_id, 'project.write'));
 
 create policy "Has project write permission (update)"
 on "public"."projects"
 as permissive
 for update
 to authenticated
-using (has_role(group_id, 'project.write'))
-with check (has_role(group_id, 'project.write'));
+using (has_permission(group_id, 'project.write'))
+with check (has_permission(group_id, 'project.write'));
 
 create policy "Has project delete permission"
 on "public"."projects"
 as permissive
 for delete
 to authenticated
-using (has_role(group_id, 'project.delete'));
+using (has_permission(group_id, 'project.delete'));
