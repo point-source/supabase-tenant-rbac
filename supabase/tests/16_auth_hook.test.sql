@@ -34,10 +34,16 @@ INSERT INTO auth.users (
 INSERT INTO rbac.groups (id, name)
 VALUES ('eeeeeeee-0000-0000-0000-000000000002'::uuid, 'Hook Test Group');
 
+-- Create a test-specific role with no permissions so Test 2 is independent of
+-- the global 'owner' role's permissions array.
+INSERT INTO rbac.roles (name, description, permissions)
+VALUES ('hook-test-role', 'Role for auth hook tests only', ARRAY[]::text[])
+ON CONFLICT (name) DO NOTHING;
+
 -- Insert membership — trigger populates user_claims automatically
 INSERT INTO rbac.members (group_id, user_id, roles)
 VALUES ('eeeeeeee-0000-0000-0000-000000000002'::uuid,
-        'eeeeeeee-0000-0000-0000-000000000001'::uuid, ARRAY['owner']);
+        'eeeeeeee-0000-0000-0000-000000000001'::uuid, ARRAY['hook-test-role']);
 
 -- ── Test 1: hook is callable without error ────────────────────────────────────
 SELECT lives_ok(
@@ -54,7 +60,7 @@ SELECT is(
         '{"user_id":"eeeeeeee-0000-0000-0000-000000000001",
           "claims":{"sub":"eeeeeeee-0000-0000-0000-000000000001","app_metadata":{}}}'::jsonb
     ))->'claims'->'app_metadata'->'groups'->'eeeeeeee-0000-0000-0000-000000000002',
-    '{"roles":["owner"],"permissions":[]}'::jsonb,
+    '{"roles":["hook-test-role"],"permissions":[]}'::jsonb,
     'hook injects correct group/role/permission data into claims.app_metadata.groups'
 );
 

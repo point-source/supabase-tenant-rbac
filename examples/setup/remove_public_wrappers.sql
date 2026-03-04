@@ -39,6 +39,11 @@ DROP FUNCTION IF EXISTS public.remove_member(uuid, uuid);
 DROP FUNCTION IF EXISTS public.update_member_roles(uuid, uuid, text[]);
 DROP FUNCTION IF EXISTS public.list_members(uuid);
 DROP FUNCTION IF EXISTS public.accept_invite(uuid);
+DROP FUNCTION IF EXISTS public.create_invite(uuid, text[], timestamptz);
+DROP FUNCTION IF EXISTS public.delete_invite(uuid);
+DROP FUNCTION IF EXISTS public.grant_member_permission(uuid, uuid, text);
+DROP FUNCTION IF EXISTS public.revoke_member_permission(uuid, uuid, text);
+DROP FUNCTION IF EXISTS public.list_member_permissions(uuid, uuid);
 
 -- Role management RPCs
 DROP FUNCTION IF EXISTS public.create_role(text, text);

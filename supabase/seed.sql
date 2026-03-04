@@ -61,18 +61,29 @@ VALUES
 -- Add role definitions used in test data.
 -- permissions[] reflects what each role grants — these are resolved into
 -- claims.permissions[] at cache time by _build_user_claims().
+--
+-- Hierarchical ORBAC model: broad roles carry multiple permissions.
+-- The pre-seeded 'owner' role is updated with full permissions here.
+UPDATE rbac.roles
+SET permissions = ARRAY[
+    'group.update', 'group.delete', 'group.manage_access',
+    'group_user.create', 'group_user.read', 'group_user.update',
+    'group_user.delete', 'group_user.invite',
+    'group_data.create', 'group_data.read', 'group_data.update', 'group_data.delete'
+]
+WHERE name = 'owner';
+
 INSERT INTO rbac.roles (name, description, permissions) VALUES
-    ('group.update',       'Can update group metadata',         ARRAY['group.update']),
-    ('group.delete',       'Can delete the group',              ARRAY['group.delete']),
-    ('group_user.create',  'Can add members to the group',      ARRAY['group_user.create']),
-    ('group_user.read',    'Can view group members',            ARRAY['group_user.read']),
-    ('group_user.update',  'Can update member roles',           ARRAY['group_user.update']),
-    ('group_user.delete',  'Can remove group members',          ARRAY['group_user.delete']),
-    ('group_user.invite',  'Can create invites',                ARRAY['group_user.invite']),
-    ('group_data.create',  'Can create group data',             ARRAY['group_data.create']),
-    ('group_data.read',    'Can read group data',               ARRAY['group_data.read']),
-    ('group_data.update',  'Can update group data',             ARRAY['group_data.update']),
-    ('group_data.delete',  'Can delete group data',             ARRAY['group_data.delete']);
+    ('admin',  'Manage members and data (all except group.delete)',
+               ARRAY['group.update', 'group.manage_access',
+                     'group_user.create', 'group_user.read', 'group_user.update',
+                     'group_user.delete', 'group_user.invite',
+                     'group_data.create', 'group_data.read', 'group_data.update', 'group_data.delete']),
+    ('editor', 'Create and modify group data',
+               ARRAY['group_data.create', 'group_data.read', 'group_data.update', 'group_data.delete',
+                     'group_user.read']),
+    ('viewer', 'Read-only access to group data and members',
+               ARRAY['group_data.read', 'group_user.read']);
 
 INSERT INTO
     rbac.groups (id, name, metadata, created_at)
@@ -96,25 +107,30 @@ VALUES
         '2024-01-15 11:33:27.099108-08'
     );
 
--- devuser in RED: full permissions
+-- devuser in RED: owner (full permissions via ORBAC role)
 INSERT INTO rbac.members (group_id, user_id, roles) VALUES
     ('ffc83b57-2960-47dc-bdfb-adc9b894c8d9', 'd55f3b79-9004-4bc4-af5c-7fcc1478345a',
-     ARRAY['group.update','group.delete','group_user.create','group_user.read','group_user.update','group_user.delete','group_user.invite','group_data.create','group_data.read','group_data.update','group_data.delete']);
+     ARRAY['owner']);
 
--- invited user in BLUE: full permissions
+-- invited user in BLUE: owner (full permissions via ORBAC role)
 INSERT INTO rbac.members (group_id, user_id, roles) VALUES
     ('088ee15b-da1e-42a4-8af5-c87ae0891cab', '1a01f608-c233-4ad6-966e-cf47ff33ee4f',
-     ARRAY['group.update','group.delete','group_user.create','group_user.read','group_user.update','group_user.delete','group_user.invite','group_data.create','group_data.read','group_data.update','group_data.delete']);
+     ARRAY['owner']);
 
--- devuser in BLUE: read-only
+-- devuser in BLUE: viewer (read-only)
 INSERT INTO rbac.members (group_id, user_id, roles) VALUES
     ('088ee15b-da1e-42a4-8af5-c87ae0891cab', 'd55f3b79-9004-4bc4-af5c-7fcc1478345a',
-     ARRAY['group_data.read']);
+     ARRAY['viewer']);
 
--- invited user in GREEN: read-only
+-- invited user in GREEN: viewer (read-only)
 INSERT INTO rbac.members (group_id, user_id, roles) VALUES
     ('690b6e42-cb50-47fa-9e47-0d3167a7e125', '1a01f608-c233-4ad6-966e-cf47ff33ee4f',
-     ARRAY['group_data.read']);
+     ARRAY['viewer']);
+
+-- Example: grant devuser a direct permission override in BLUE group
+-- (devuser only has group_data.read role in BLUE; this adds data.export directly)
+INSERT INTO rbac.member_permissions (group_id, user_id, permission) VALUES
+    ('088ee15b-da1e-42a4-8af5-c87ae0891cab', 'd55f3b79-9004-4bc4-af5c-7fcc1478345a', 'data.export');
 
 INSERT INTO
     public.sensitive_data (id, "data", created_at, owned_by_group)

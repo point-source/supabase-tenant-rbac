@@ -6,7 +6,7 @@
 -- if the opt-in script has been run.
 
 BEGIN;
-SELECT plan(12);
+SELECT plan(17);
 
 -- ── Test 1: authenticator has EXECUTE on db_pre_request() ────────────────────
 SELECT ok(
@@ -78,6 +78,38 @@ SELECT ok(
 SELECT ok(
     has_function_privilege('supabase_auth_admin', 'rbac.custom_access_token_hook(jsonb)', 'EXECUTE'),
     'supabase_auth_admin role has EXECUTE on rbac.custom_access_token_hook(jsonb)'
+);
+
+-- ── Tests 13-17: REVOKE/GRANT on RLS helpers (added v5.2.0) ──────────────────
+
+-- ── Test 13: authenticated has EXECUTE on get_claims() ───────────────────────
+SELECT ok(
+    has_function_privilege('authenticated', 'rbac.get_claims()', 'EXECUTE'),
+    'authenticated role has EXECUTE on rbac.get_claims()'
+);
+
+-- ── Test 14: authenticated has EXECUTE on has_role() ─────────────────────────
+SELECT ok(
+    has_function_privilege('authenticated', 'rbac.has_role(uuid, text)', 'EXECUTE'),
+    'authenticated role has EXECUTE on rbac.has_role(uuid, text)'
+);
+
+-- ── Test 15: authenticated has EXECUTE on is_member() ────────────────────────
+SELECT ok(
+    has_function_privilege('authenticated', 'rbac.is_member(uuid)', 'EXECUTE'),
+    'authenticated role has EXECUTE on rbac.is_member(uuid)'
+);
+
+-- ── Test 16: authenticated has EXECUTE on has_any_role() ─────────────────────
+SELECT ok(
+    has_function_privilege('authenticated', 'rbac.has_any_role(uuid, text[])', 'EXECUTE'),
+    'authenticated role has EXECUTE on rbac.has_any_role(uuid, text[])'
+);
+
+-- ── Test 17: authenticated has EXECUTE on has_all_roles() ────────────────────
+SELECT ok(
+    has_function_privilege('authenticated', 'rbac.has_all_roles(uuid, text[])', 'EXECUTE'),
+    'authenticated role has EXECUTE on rbac.has_all_roles(uuid, text[])'
 );
 
 SELECT * FROM finish();

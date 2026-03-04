@@ -133,6 +133,52 @@ IF 'rbac' <> 'public' THEN
         AS $f$ SELECT rbac.accept_invite($1) $f$
     $sql$;
 
+    -- ── Member permission override RPCs (authenticated) ─────────────────────
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.grant_member_permission(
+            p_group_id uuid, p_user_id uuid, p_permission text
+        )
+        RETURNS void LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.grant_member_permission($1, $2, $3) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.revoke_member_permission(
+            p_group_id uuid, p_user_id uuid, p_permission text
+        )
+        RETURNS void LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.revoke_member_permission($1, $2, $3) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.list_member_permissions(
+            p_group_id uuid, p_user_id uuid DEFAULT NULL
+        )
+        RETURNS TABLE(user_id uuid, permission text, created_at timestamptz)
+        LANGUAGE sql STABLE
+        SET search_path = rbac
+        AS $f$ SELECT * FROM rbac.list_member_permissions($1, $2) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.create_invite(
+            p_group_id uuid, p_roles text[], p_expires_at timestamptz DEFAULT NULL
+        )
+        RETURNS uuid LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.create_invite($1, $2, $3) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.delete_invite(p_invite_id uuid)
+        RETURNS void LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.delete_invite($1) $f$
+    $sql$;
+
     -- ── Auth Hook wrapper ────────────────────────────────────────────────────
     -- NOTE: If you create this wrapper, update config.toml to point to the
     -- public wrapper instead of the schema-qualified function:
@@ -147,7 +193,9 @@ IF 'rbac' <> 'public' THEN
 
     -- ── REVOKE / GRANT on public wrappers ───────────────────────────────────
 
-    -- RLS helpers: available to all roles (functions handle auth tiers internally)
+    -- RLS helpers: authenticated and service_role only.
+    -- anon is excluded — these functions always return false for anon callers
+    -- (handled internally), so granting anon is unnecessary attack surface.
     EXECUTE 'REVOKE EXECUTE ON FUNCTION public.get_claims() FROM PUBLIC';
     EXECUTE 'REVOKE EXECUTE ON FUNCTION public.has_role(uuid, text) FROM PUBLIC';
     EXECUTE 'REVOKE EXECUTE ON FUNCTION public.is_member(uuid) FROM PUBLIC';
@@ -157,14 +205,14 @@ IF 'rbac' <> 'public' THEN
     EXECUTE 'REVOKE EXECUTE ON FUNCTION public.has_any_permission(uuid, text[]) FROM PUBLIC';
     EXECUTE 'REVOKE EXECUTE ON FUNCTION public.has_all_permissions(uuid, text[]) FROM PUBLIC';
 
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.get_claims() TO authenticated, anon, service_role';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_role(uuid, text) TO authenticated, anon, service_role';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.is_member(uuid) TO authenticated, anon, service_role';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_any_role(uuid, text[]) TO authenticated, anon, service_role';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_all_roles(uuid, text[]) TO authenticated, anon, service_role';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_permission(uuid, text) TO authenticated, anon, service_role';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_any_permission(uuid, text[]) TO authenticated, anon, service_role';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_all_permissions(uuid, text[]) TO authenticated, anon, service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.get_claims() TO authenticated, service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_role(uuid, text) TO authenticated, service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.is_member(uuid) TO authenticated, service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_any_role(uuid, text[]) TO authenticated, service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_all_roles(uuid, text[]) TO authenticated, service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_permission(uuid, text) TO authenticated, service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_any_permission(uuid, text[]) TO authenticated, service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.has_all_permissions(uuid, text[]) TO authenticated, service_role';
 
     -- Management RPCs: authenticated only
     EXECUTE 'REVOKE EXECUTE ON FUNCTION public.create_group(text, jsonb, text[]) FROM PUBLIC';
@@ -174,6 +222,11 @@ IF 'rbac' <> 'public' THEN
     EXECUTE 'REVOKE EXECUTE ON FUNCTION public.update_member_roles(uuid, uuid, text[]) FROM PUBLIC';
     EXECUTE 'REVOKE EXECUTE ON FUNCTION public.list_members(uuid) FROM PUBLIC';
     EXECUTE 'REVOKE EXECUTE ON FUNCTION public.accept_invite(uuid) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.create_invite(uuid, text[], timestamptz) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.delete_invite(uuid) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.grant_member_permission(uuid, uuid, text) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.revoke_member_permission(uuid, uuid, text) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.list_member_permissions(uuid, uuid) FROM PUBLIC';
 
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.create_group(text, jsonb, text[]) TO authenticated';
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.delete_group(uuid) TO authenticated';
@@ -182,6 +235,11 @@ IF 'rbac' <> 'public' THEN
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.update_member_roles(uuid, uuid, text[]) TO authenticated';
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.list_members(uuid) TO authenticated';
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.accept_invite(uuid) TO authenticated';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.create_invite(uuid, text[], timestamptz) TO authenticated';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.delete_invite(uuid) TO authenticated';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.grant_member_permission(uuid, uuid, text) TO authenticated';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.revoke_member_permission(uuid, uuid, text) TO authenticated';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.list_member_permissions(uuid, uuid) TO authenticated';
 
     -- Auth hook: supabase_auth_admin only
     EXECUTE 'REVOKE EXECUTE ON FUNCTION public.custom_access_token_hook(jsonb) FROM PUBLIC';

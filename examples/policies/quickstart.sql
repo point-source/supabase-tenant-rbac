@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- Quickstart RLS Policies for supabase_rbac v5.0.0
+-- Quickstart RLS Policies for supabase_rbac v5.2.0
 -- ═══════════════════════════════════════════════════════════════════════════
 -- These are recommended starter policies for the rbac extension tables.
 -- The extension ships with RLS enabled and ZERO policies (deny-all default).
@@ -122,10 +122,39 @@ CREATE POLICY "Service role can manage roles"
     WITH CHECK (true);
 
 -- ─────────────────────────────────────────────────────────────────────────
+-- rbac.member_permissions
+-- ─────────────────────────────────────────────────────────────────────────
+-- Direct permission overrides per member. These merge into the claims cache
+-- alongside permissions from roles.
+--
+-- The 'group.manage_access' permission below is a convention, not hard-coded.
+-- Adjust to match your application's permission naming scheme.
+
+-- Members can see permission overrides in their groups
+CREATE POLICY "Members can read permission overrides"
+    ON rbac.member_permissions FOR SELECT TO authenticated
+    USING (rbac.is_member(group_id));
+
+-- Users with the 'group.manage_access' permission can grant/revoke overrides
+CREATE POLICY "Claims writers can manage permission overrides"
+    ON rbac.member_permissions FOR ALL TO authenticated
+    USING (rbac.has_permission(group_id, 'group.manage_access'))
+    WITH CHECK (rbac.has_permission(group_id, 'group.manage_access'));
+
+-- service_role has full access for admin operations
+CREATE POLICY "Service role has full access to permission overrides"
+    ON rbac.member_permissions FOR ALL TO service_role
+    USING (true) WITH CHECK (true);
+
+-- ─────────────────────────────────────────────────────────────────────────
 -- rbac.user_claims
 -- ─────────────────────────────────────────────────────────────────────────
--- This table is auto-managed by the _sync_member_metadata trigger.
--- Do NOT add policies that let end users write arbitrary claims.
+-- This table is written exclusively by the three SECURITY DEFINER trigger
+-- functions (_sync_member_metadata, _sync_member_permission,
+-- _on_role_permissions_change). They run as the function owner (postgres),
+-- not the calling role, so authenticated does NOT need INSERT/UPDATE here.
+-- Do NOT add INSERT/UPDATE policies for authenticated — that would allow
+-- any user to forge claims for any user_id.
 
 -- PostgREST pre-request hook reads claims for the authenticated user
 CREATE POLICY "authenticator can read all claims"
@@ -150,16 +179,3 @@ CREATE POLICY "Users can read own claims"
     ON rbac.user_claims FOR SELECT
     TO authenticated
     USING (user_id = auth.uid());
-
--- authenticated INSERT/UPDATE: needed by _sync_member_metadata trigger when
--- fired from SECURITY INVOKER RPCs (add_member, remove_member, update_member_roles)
-CREATE POLICY "authenticated can insert claims (trigger)"
-    ON rbac.user_claims FOR INSERT
-    TO authenticated
-    WITH CHECK (true);
-
-CREATE POLICY "authenticated can update claims (trigger)"
-    ON rbac.user_claims FOR UPDATE
-    TO authenticated
-    USING (true)
-    WITH CHECK (true);

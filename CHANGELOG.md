@@ -1,5 +1,68 @@
 # Changelog
 
+## 5.2.0
+
+### Security Hardening
+
+- **Claims forgery fix (P0)** — The three trigger functions that write to `rbac.user_claims` (`_sync_member_metadata`, `_sync_member_permission`, `_on_role_permissions_change`) are now `SECURITY DEFINER`. They run as the function owner (`postgres`) regardless of the invoking role. The `authenticated` role's table grant on `user_claims` is reduced to SELECT-only. Previously, `authenticated` had INSERT/UPDATE on `user_claims` with `WITH CHECK (true)` RLS policies — allowing any authenticated user to forge claims for any `user_id`. Trigger functions (`RETURNS trigger`) cannot be called directly via RPC or REST; SECURITY DEFINER on trigger functions does not expand the API surface.
+  - `examples/policies/quickstart.sql` — removed "authenticated can insert/update claims" policies; updated header comment explaining the DEFINER-trigger model.
+  - `supabase/migrations/20240512101038_add_rls_policies.sql` — same removals.
+- **Consistent REVOKE/GRANT on all RLS helpers (P3)** — `get_claims`, `has_role`, `is_member`, `has_any_role`, and `has_all_roles` now have explicit `REVOKE FROM PUBLIC` / `GRANT TO authenticated, anon, service_role`, matching the existing pattern on `has_permission`, `has_any_permission`, `has_all_permissions`.
+
+### New Features
+
+- **`create_invite()` RPC (P1)** — `create_invite(p_group_id uuid, p_roles text[], p_expires_at timestamptz DEFAULT NULL) RETURNS uuid`. SECURITY INVOKER; INSERT is subject to the app-author's RLS policy on `invites`. Validates roles via `_validate_roles()`. Sets `invited_by = auth.uid()`.
+- **`delete_invite()` RPC (P1)** — `delete_invite(p_invite_id uuid) RETURNS void`. SECURITY INVOKER; DELETE is subject to the app-author's RLS policy on `invites`. Raises if the invite is not found or not authorized.
+- Both new RPCs have REVOKE/GRANT to `authenticated`. Public wrappers added to `examples/setup/create_public_wrappers.sql` and `remove_public_wrappers.sql`.
+- **Invites table GRANT fix (P1)** — `GRANT SELECT, UPDATE ON invites TO authenticated` is updated to `GRANT SELECT, INSERT, UPDATE, DELETE ON invites TO authenticated`. The missing INSERT/DELETE blocked the new RPCs.
+- **`revoke_member_permission()` empty-string validation (P4)** — Rejects blank or whitespace-only `p_permission` values with `invalid_parameter_value`, matching the existing validation in `grant_member_permission()`.
+
+### Breaking Changes / Behavior Changes
+
+- **ORBAC seed data (P2)** — `supabase/seed.sql` now uses hierarchical roles (`owner`, `admin`, `editor`, `viewer`) instead of 12 fine-grained single-permission roles. The pre-seeded `owner` role is updated with a full permissions array. Member assignments simplified to `ARRAY['owner']` (was 12-element arrays) and `ARRAY['viewer']` (was `ARRAY['group_data.read']`). This is a seed-data-only change — no extension schema change.
+- **`has_role` → `has_permission` in starter policies (P2)** — The local dev migration (`20240512101038_add_rls_policies.sql`) and the sensitive_data dummy data migration (`20240502214829_add_dummy_data.sql`) now use `has_permission()` (not `has_role()`) for permission-string checks. This aligns with the ORBAC model where `has_role` checks role names and `has_permission` checks resolved permission strings.
+- **Groups INSERT policy removed from starter policies (P2)** — The `"Authenticated can create"` INSERT policy on `rbac.groups` is removed. Group creation should go through `create_group()` (SECURITY DEFINER RPC), not direct INSERT.
+
+### Cleanup
+
+- **Delete outdated example files (P5)** — `examples/policies/permission_centric.sql` and `examples/policies/role_centric.sql` removed. Both were 4.x-era examples that predate the ORBAC permission model. `examples/policies/quickstart.sql` covers the same ground with current patterns.
+- **Remove `anon` from public wrapper RLS helper grants (P6)** — `examples/setup/create_public_wrappers.sql` no longer grants `anon` EXECUTE on the 8 RLS helper wrappers. These functions always return `false` for `anon` callers (handled internally) — the grant was unnecessary attack surface.
+
+### Documentation
+
+- `docs/SECURITY.md` — added "Claims Cache Write Protection" section explaining the DEFINER trigger model and migration steps for existing deployments; added "PostgREST Schema Exposure" warning; updated DEFINER function inventory (now 5 functions).
+
+### New Tests
+
+- `22_claims_write_guard.test.sql` — verifies that direct INSERT and UPDATE on `rbac.user_claims` are blocked for `authenticated` at both the privilege and RLS levels (4 assertions).
+- `23_invite_rpcs.test.sql` — tests `create_invite()` and `delete_invite()` RPCs: EXECUTE grants, creation, validation, deletion, and RLS enforcement (8 assertions).
+- `12_access_control.test.sql` — 5 new assertions for EXECUTE grants on `get_claims`, `has_role`, `is_member`, `has_any_role`, `has_all_roles` (17 total, was 12).
+
+## 5.1.0
+
+### New Features
+
+- **Direct member permission overrides** — grant individual permissions to a member without assigning a new role. Useful when a member needs a single capability (e.g., `data.export`) that doesn't warrant a full role assignment.
+  - New `member_permissions` table: stores `(group_id, user_id, permission)` triples. UNIQUE constraint on all three columns makes grants idempotent. RLS enabled, deny-all on install.
+  - Overrides merge additively into the `permissions[]` array in `user_claims` — same format, same helpers (`has_permission`, `has_any_permission`, `has_all_permissions`), zero read-side changes.
+  - `_build_user_claims()` extended with a UNION ALL branch for `member_permissions`. Backwards compatible: if the table is empty, output is identical to v5.0.0.
+  - New trigger `on_member_permission_change` (AFTER INSERT OR DELETE on `member_permissions`): calls `_build_user_claims()` and upserts `user_claims`, keeping the cache always in sync.
+  - Cascade behavior: deleting a member (or the group, or the auth user) automatically deletes their `member_permissions` rows via FK ON DELETE CASCADE.
+- **`members(group_id, user_id)` promoted to a named constraint** — `members_group_user_uq` (reuses existing unique index; no rebuild required). Required for the `member_permissions` FK reference and lays groundwork for Phase 2 (group-level roles).
+- **New management RPCs** (SECURITY INVOKER, GRANT to `authenticated`):
+  - `grant_member_permission(group_id, user_id, permission)` → void — idempotent (ON CONFLICT DO NOTHING).
+  - `revoke_member_permission(group_id, user_id, permission)` → void — raises if not found.
+  - `list_member_permissions(group_id, user_id DEFAULT NULL)` → table — returns all direct overrides for a group (or a specific member).
+- **Quickstart policy update** — `examples/policies/quickstart.sql` includes starter policies for `member_permissions` using `has_permission(group_id, 'group.manage_access')`. Permission name is a convention, not hard-coded.
+- **Public wrappers update** — `examples/setup/create_public_wrappers.sql` wraps the 3 new RPCs; `remove_public_wrappers.sql` drops them.
+- **Seed data update** — `supabase/seed.sql` adds the `group.manage_access` role, assigns it to admin members in RED/BLUE groups, and includes an example `member_permissions` row.
+
+### New Tests
+
+- `19_member_permissions.test.sql` — CRUD + cascade behavior (7 assertions)
+- `20_permission_claims_merge.test.sql` — direct overrides in claims, role merge, deduplication, `has_permission()`, revoke (8 assertions)
+- `21_permission_security.test.sql` — EXECUTE grants, claims verification, RLS block test (6 assertions)
+
 ## 5.0.0
 
 **Breaking release** — no upgrade path from v4.x. See the migration notes below.

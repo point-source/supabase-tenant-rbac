@@ -65,14 +65,31 @@ Global role definitions. All management RPCs validate role assignments against t
 Pre-seeded with `'owner'` (default role for `create_group`).
 
 #### `user_claims`
-Claims cache. One row per user, auto-managed by the `_sync_member_metadata` trigger.
+Claims cache. One row per user, auto-managed by the `_sync_member_metadata` and `_sync_member_permission` triggers.
 
 | Column | Type | Notes |
 |--------|------|-------|
 | `user_id` | `uuid` | Primary key, FK → `auth.users(id)` ON DELETE CASCADE |
 | `claims` | `jsonb` | Nested group/role/permission map — see format below |
 
-**Never write to this table directly.** It is updated automatically whenever `members` or `roles.permissions` changes.
+**Never write to this table directly.** It is updated automatically whenever `members`, `roles.permissions`, or `member_permissions` changes.
+
+#### `member_permissions`
+Direct per-member permission overrides. One row per `(group_id, user_id, permission)` triple.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `uuid` | Primary key, auto-generated |
+| `group_id` | `uuid` | FK → `groups(id)` ON DELETE CASCADE |
+| `user_id` | `uuid` | FK → `auth.users(id)` ON DELETE CASCADE |
+| `permission` | `text` | The permission string being granted directly |
+| `created_at` | `timestamptz` | Auto-set on insert |
+
+**Unique constraint:** `(group_id, user_id, permission)` — prevents duplicate grants; enables idempotent `grant_member_permission()`.
+
+**FK to `members(group_id, user_id)` ON DELETE CASCADE** — deleting a member automatically removes all their direct permission overrides in that group.
+
+Permission overrides are merged into `user_claims.permissions[]` alongside role-derived permissions. The combined `permissions[]` is the flat, deduplicated, sorted union of both sources.
 
 ### Claims Storage Format
 
@@ -91,7 +108,7 @@ Claims cache. One row per user, auto-managed by the `_sync_member_metadata` trig
 }
 ```
 
-`roles` contains the raw role assignments from `members.roles[]`. `permissions` is the flat, deduplicated, alphabetically-sorted union of all permissions from `roles.permissions[]` for every role the user holds in that group. Both are resolved at write time by `_build_user_claims()` — zero runtime cost in RLS policies.
+`roles` contains the raw role assignments from `members.roles[]`. `permissions` is the flat, deduplicated, alphabetically-sorted union of all permissions from `roles.permissions[]` for every role the user holds in that group, **plus** any direct overrides from `member_permissions` for that (group, user) pair. Both sources are resolved at write time by `_build_user_claims()` — zero runtime cost in RLS policies.
 
 The `custom_access_token_hook` injects this structure into JWT `app_metadata.groups` at token creation:
 
@@ -121,10 +138,10 @@ The `custom_access_token_hook` injects this structure into JWT `app_metadata.gro
          ▼
 3. _sync_member_metadata() [SECURITY INVOKER] runs
    - Calls _build_user_claims(user_id)
-   - _build_user_claims() joins members with roles to resolve permissions:
+   - _build_user_claims() joins members with roles + member_permissions:
      SELECT jsonb_object_agg(group_id::text,
        jsonb_build_object('roles', roles, 'permissions',
-         deduplicated_union_of_all_role_permissions))
+         deduplicated_union_of_role_permissions_and_direct_overrides))
      FROM members WHERE user_id = p_user_id
    - Upserts result into rbac.user_claims
 
@@ -139,6 +156,16 @@ The `custom_access_token_hook` injects this structure into JWT `app_metadata.gro
 3b. _on_role_permissions_change() [SECURITY INVOKER] runs
     - Finds all users holding the changed role (SELECT DISTINCT user_id FROM members)
     - Calls _build_user_claims() and upserts user_claims for each affected user
+
+1c. grant_member_permission() / revoke_member_permission() modifies member_permissions
+         │
+         ▼
+2c. AFTER trigger fires: on_member_permission_change
+         │
+         ▼
+3c. _sync_member_permission() [SECURITY INVOKER] runs
+    - Calls _build_user_claims(user_id)
+    - Upserts result into rbac.user_claims
          │
          ▼
 4. rbac.user_claims now reflects current memberships and permissions
@@ -175,9 +202,11 @@ The `custom_access_token_hook` injects this structure into JWT `app_metadata.gro
 
 ```
 @extschema@ (e.g. rbac) — NOT in PostgREST exposed schemas
-├── Tables: groups, members, invites, roles (with permissions[]), user_claims
+├── Tables: groups, members, invites, roles (with permissions[]),
+│           user_claims, member_permissions
 ├── Internal: db_pre_request [INVOKER], _get_user_groups [INVOKER],
 │             _build_user_claims [STABLE], _sync_member_metadata [INVOKER],
+│             _sync_member_permission [INVOKER],
 │             _on_role_permissions_change [INVOKER], _set_updated_at,
 │             _jwt_is_expired, _validate_roles
 ├── Auth Hook: custom_access_token_hook [INVOKER]
@@ -187,6 +216,9 @@ The `custom_access_token_hook` injects this structure into JWT `app_metadata.gro
 │                add_member [INVOKER], remove_member [INVOKER],
 │                update_member_roles [INVOKER], list_members [INVOKER],
 │                accept_invite [DEFINER]
+├── Override mgmt: grant_member_permission [INVOKER],
+│                  revoke_member_permission [INVOKER],
+│                  list_member_permissions [INVOKER]
 ├── Role mgmt:   create_role [service_role], delete_role [service_role],
 │                list_roles [service_role]
 └── Perm mgmt:   set_role_permissions [service_role], grant_permission [service_role],
@@ -288,6 +320,9 @@ Permissions are resolved from `roles.permissions[]` at write time (claims cache)
 | `grant_permission(p_role_name, p_permission)` → `void` | service_role only | Add one permission to a role (idempotent) |
 | `revoke_permission(p_role_name, p_permission)` → `void` | service_role only | Remove one permission from a role |
 | `list_role_permissions(p_role_name DEFAULT NULL)` → `TABLE(role_name, permission)` | service_role only | List permissions per role |
+| `grant_member_permission(p_group_id, p_user_id, p_permission)` → `void` | INVOKER | Grant a direct permission override to a member (idempotent) |
+| `revoke_member_permission(p_group_id, p_user_id, p_permission)` → `void` | INVOKER | Remove a direct permission override (raises if not found) |
+| `list_member_permissions(p_group_id, p_user_id DEFAULT NULL)` → `TABLE(user_id, permission, created_at)` | INVOKER | List direct overrides in a group (all members or one) |
 
 ---
 

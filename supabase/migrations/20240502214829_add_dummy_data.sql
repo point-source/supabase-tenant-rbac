@@ -68,11 +68,11 @@ grant
 update on table "public"."sensitive_data" to "service_role";
 
 create policy "Has update permission" on "sensitive_data" as permissive for all to authenticated using (
-    rbac.has_role (owned_by_group, 'group_data.update'::text)
+    rbac.has_permission (owned_by_group, 'group_data.update'::text)
 )
 with
     check (
-        rbac.has_role (owned_by_group, 'group_data.update'::text)
+        rbac.has_permission (owned_by_group, 'group_data.update'::text)
     );
 
 create policy "Allow group member to read" on "sensitive_data" as permissive for

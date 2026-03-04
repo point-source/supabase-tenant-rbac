@@ -27,21 +27,24 @@ All functions use `SET search_path = @extschema@` to prevent search_path injecti
 All management RPCs (`create_group`, `add_member`, `update_member_roles`, `accept_invite`) validate role assignments against the `roles` table. Free-text role strings from v4.x are replaced by a validated vocabulary.
 
 ### 5. Minimal SECURITY DEFINER Surface
-Only two functions are `SECURITY DEFINER`:
+Five functions are `SECURITY DEFINER`:
 - `create_group()` — bootstraps membership when no prior RLS-satisfying row exists
 - `accept_invite()` — writes invites + members atomically, bypassing RLS
+- `_sync_member_metadata()` — trigger function that writes `rbac.user_claims`; runs as function owner (postgres) to avoid requiring `authenticated` INSERT/UPDATE on user_claims
+- `_sync_member_permission()` — trigger function that writes `rbac.user_claims`; same rationale
+- `_on_role_permissions_change()` — trigger function that writes `rbac.user_claims` for all affected users; same rationale
+
+The three trigger functions (`RETURNS trigger`) cannot be called directly via RPC or REST — only the database trigger mechanism can invoke them. SECURITY DEFINER on trigger functions does not expand the callable API surface.
 
 All other functions are `SECURITY INVOKER`:
 - `db_pre_request()` — reads `rbac.user_claims` (extension-owned, not privileged)
 - `_get_user_groups()` — reads `rbac.user_claims` for the Storage fallback path
 - `_build_user_claims()` — reads `members` + `roles`, builds claims JSONB (trigger helper)
-- `_sync_member_metadata()` — writes `rbac.user_claims` (trigger-only)
-- `_on_role_permissions_change()` — writes `rbac.user_claims` for affected users (trigger-only)
 - `custom_access_token_hook()` — reads `rbac.user_claims` for JWT injection
 - All RLS helpers (`has_role`, `is_member`, `has_any_role`, `has_all_roles`, `get_claims`, `has_permission`, `has_any_permission`, `has_all_permissions`)
-- All management RPCs (`delete_group`, `add_member`, `remove_member`, `update_member_roles`, `list_members`)
+- All management RPCs (`delete_group`, `add_member`, `remove_member`, `update_member_roles`, `list_members`, `create_invite`, `delete_invite`)
 
-By moving the claims cache from `auth.users` to `rbac.user_claims`, the three previously DEFINER functions no longer need elevated privileges to read or write `auth.users`.
+By moving the claims cache from `auth.users` to `rbac.user_claims` (v5.0.0) and making the three write triggers SECURITY DEFINER (v5.2.0), the `authenticated` role no longer needs INSERT/UPDATE on `user_claims`.
 
 ---
 
@@ -72,12 +75,12 @@ Every claims-checking function calls `_jwt_is_expired()` first. If the JWT is ex
 - No privileged access needed — `rbac.user_claims` is an extension-owned table.
 - **RPC access restricted**: EXECUTE revoked from PUBLIC, granted only to `authenticator`.
 
-### `_sync_member_metadata()` — SECURITY INVOKER
+### `_sync_member_metadata()` — SECURITY DEFINER
 - **Trigger-only**: Returns `trigger` type — cannot be called directly via API.
 - Writes to `rbac.user_claims` (upsert). No `auth.users` access required.
-- When fired by SECURITY DEFINER RPCs (`create_group`, `accept_invite`), runs as `postgres`.
-- When fired by SECURITY INVOKER RPCs (`add_member`, etc.), runs as `authenticated`.
+- Runs as the function owner (`postgres`) regardless of which role fired the triggering DML.
 - **Immutability enforcement**: Raises exception if `user_id` or `group_id` is changed on UPDATE.
+- **Why DEFINER**: Allows the authenticated role to be stripped of INSERT/UPDATE on `user_claims`, closing the claims forgery vector (any authenticated user could previously forge claims for any `user_id`).
 
 ### `_get_user_groups()` — SECURITY INVOKER
 - Reads `claims` from `rbac.user_claims` for `auth.uid()`. Returns `'{}'` for unauthenticated/groupless users.
@@ -118,7 +121,66 @@ Example: An `add_member()` call succeeds only if the caller satisfies the INSERT
 
 ---
 
+## Claims Cache Write Protection
+
+### Why `authenticated` does not write to `user_claims` (v5.2.0+)
+
+Prior to v5.2.0, the three trigger functions that maintain `user_claims` were SECURITY INVOKER. When fired by `add_member()` or other INVOKER RPCs, the trigger ran as `authenticated`. This meant `authenticated` needed INSERT/UPDATE on `user_claims` — and those table-level grants, combined with the required RLS policies (`WITH CHECK (true)`), allowed **any authenticated user to forge claims for any `user_id`** by directly calling `INSERT INTO rbac.user_claims ...`.
+
+As of v5.2.0, all three trigger functions are SECURITY DEFINER:
+- `_sync_member_metadata()`
+- `_sync_member_permission()`
+- `_on_role_permissions_change()`
+
+They run as the function owner (`postgres`) regardless of which role triggers the DML on `members`, `member_permissions`, or `roles`. The `authenticated` table grant is reduced to SELECT-only. No INSERT/UPDATE RLS policies on `user_claims` are needed or recommended.
+
+**Trigger functions cannot be called via REST or RPC** — only the database trigger mechanism can invoke them. Making them SECURITY DEFINER does not expand the callable API surface.
+
+### Migration steps for existing deployments (5.1.0 → 5.2.0)
+
+1. Apply the upgrade script: `supabase_rbac--5.1.0--5.2.0.sql`
+2. Drop the no-longer-needed RLS policies:
+   ```sql
+   DROP POLICY IF EXISTS "authenticated can insert claims (trigger)" ON rbac.user_claims;
+   DROP POLICY IF EXISTS "Allow authenticated to insert claims" ON rbac.user_claims;
+   DROP POLICY IF EXISTS "authenticated can update claims (trigger)" ON rbac.user_claims;
+   DROP POLICY IF EXISTS "Allow authenticated to update claims" ON rbac.user_claims;
+   ```
+3. Verify no INSERT/UPDATE policies remain on `rbac.user_claims` for `authenticated`.
+
+---
+
+## PostgREST Schema Exposure
+
+**Never add `rbac` (or whatever schema you installed the extension in) to PostgREST's `db_schemas`.**
+
+If `rbac` is listed in `db_schemas`, PostgREST will expose all `rbac.*` tables directly as REST endpoints, bypassing the RPC-only access model. Even with RLS enabled, direct table access via REST is a significantly larger attack surface than the RPC model.
+
+The extension's management RPCs (`create_group`, `add_member`, etc.) and RLS helpers (`has_role`, `has_permission`, etc.) are the intended API surface. If you need PostgREST to discover these functions, use the opt-in public wrappers (`examples/setup/create_public_wrappers.sql`), which live in `public` (or another exposed schema) and delegate to the private `rbac.*` originals.
+
+---
+
 ## Known Security Considerations
+
+### Direct Member Permission Override Escalation
+
+**Risk level: Low — same as role assignment; mitigated by RLS**
+
+`grant_member_permission()` is SECURITY INVOKER and relies on RLS policies on `member_permissions` to enforce who can grant overrides. If you create a policy that allows group admins to write to `member_permissions`, **nothing in the extension prevents an admin from granting a permission they do not hold themselves** (e.g., granting `data.export` without having that permission).
+
+**Mitigation**: Scope your write policy to users who have a specific management permission (e.g., `group.manage_access`). If escalation prevention is critical, add a `BEFORE INSERT` trigger on `member_permissions` that validates the granted permission against the granting user's own permissions.
+
+### Cross-Group Permission Grant
+
+**Risk level: None — blocked at two independent layers**
+
+An authenticated user with `group.manage_access` in Group A **cannot** use `grant_member_permission()` or `revoke_member_permission()` to write permission overrides in Group B.
+
+**Layer 1 — in-function guard**: Both RPCs call `is_member(p_group_id)` before any DML. If the caller is not a member of the target group, an `insufficient_privilege` exception is raised immediately — before RLS is evaluated and before the INSERT/DELETE is attempted. `is_member()` returns `true` for `postgres` and `service_role` so backend callers are unaffected.
+
+**Layer 2 — RLS WITH CHECK**: Even if the in-function guard were bypassed (e.g., via a future `CREATE OR REPLACE`), the consumer's write policy (`has_permission(group_id, 'group.manage_access')`) checks the target group's `group_id` column, not the caller's home group. A cross-group write would fail the WITH CHECK constraint.
+
+**FK as join-guard**: `member_permissions` has a composite FK to `members(group_id, user_id)`. A permission cannot be granted to a `(group_id, user_id)` pair that does not exist in `members` — so this table cannot be used to create memberships.
 
 ### `request.groups` is a Trusted Session Variable
 

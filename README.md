@@ -1,6 +1,6 @@
 # Supabase Multi-Tenant Role-based Access Control
 
-This is a [PostgreSQL TLE](https://github.com/aws/pg_tle) (extension) which provides a group and role system for Supabase projects. v5.0.0 features a private schema architecture, typed management RPCs, validated role definitions, and an optional auth hook for JWT-embedded claims. You can add it to your database by using the [database.dev](https://database.dev/) tool. It is based off the supabase community [custom claims work done here](https://github.com/supabase-community/supabase-custom-claims).
+This is a [PostgreSQL TLE](https://github.com/aws/pg_tle) (extension) which provides a group and role system for Supabase projects. v5.2.0 features a private schema architecture, typed management RPCs, validated role definitions, direct member permission overrides, hardened claims-cache security, and an optional auth hook for JWT-embedded claims. You can add it to your database by using the [database.dev](https://database.dev/) tool. It is based off the supabase community [custom claims work done here](https://github.com/supabase-community/supabase-custom-claims).
 
 To install, [visit database.dev](https://database.dev/pointsource/supabase_rbac).
 
@@ -19,7 +19,7 @@ I built this for my own personal use. It has not been audited by an independent 
 - Auto-managed claims cache (`user_claims` table) kept in sync by a trigger on every membership change
 - PostgREST `db_pre_request` hook ensures every API request uses up-to-date claims, not stale JWT data
 - Optional `custom_access_token_hook` injects group claims into JWTs at token-creation time
-- Only 2 SECURITY DEFINER functions (`create_group`, `accept_invite`) — all other RPCs are SECURITY INVOKER
+- Only 5 SECURITY DEFINER functions (`create_group`, `accept_invite`, and 3 internal trigger functions) — all callable RPCs are SECURITY INVOKER
 - RLS helpers for writing policies: `has_role`, `is_member`, `has_any_role`, `has_all_roles`, `has_permission`, `has_any_permission`, `has_all_permissions`, `get_claims`
 - Invite system: create invite codes with specific roles; accept atomically via RPC
 - Deny-all RLS by default — you add policies that fit your application
@@ -121,7 +121,7 @@ create extension "pointsource-supabase_rbac";
 It is strongly recommended to install in a dedicated private schema (not `public`), so the tables are not directly accessible via the REST API:
 
 ```sql
-create extension "pointsource-supabase_rbac" schema rbac version "5.0.0";
+create extension "pointsource-supabase_rbac" schema rbac version "5.1.0";
 ```
 
 By default, the installation has **zero public surface** — no functions are created in `public`. To expose functions for PostgREST RPC discovery or to use unqualified names in RLS policies (e.g., `has_role(...)` instead of `rbac.has_role(...)`), run `examples/setup/create_public_wrappers.sql` after installation. To remove them later, run `examples/setup/remove_public_wrappers.sql`.
@@ -157,6 +157,7 @@ All tables are created in the extension schema (e.g., `rbac`). They are **not** 
 | `invites` | `group_id`, `roles text[]`, `invited_by`, `expires_at` | Invite codes; `user_id` and `accepted_at` are populated on acceptance |
 | `roles` | `name` (PK), `description`, `permissions text[]` | Role definitions; pre-seeded with `'owner'`; all role assignments are validated against this table; `permissions` is the set of permission strings granted to holders of this role |
 | `user_claims` | `user_id` (PK), `claims jsonb` | Auto-managed claims cache; format: `{"<group-uuid>": {"roles": [...], "permissions": [...]}}`. **Never write to this table directly** |
+| `member_permissions` | `group_id`, `user_id`, `permission` (UNIQUE together), `id`, `created_at` | Direct per-member permission overrides. Grants merge into `user_claims.permissions[]` alongside role-derived permissions. Auto-managed by trigger. |
 
 > **Note:** `user_claims` is automatically kept in sync by a trigger on `members`. Writing to it directly will cause incorrect behavior.
 
@@ -235,6 +236,18 @@ Replaces the user's roles array entirely. Requires an RLS UPDATE policy on `memb
 ##### `list_members(p_group_id uuid) → table`
 
 Returns `(id, user_id, roles, metadata, created_at)` for all members of the group. Requires an RLS SELECT policy on `members`.
+
+##### `grant_member_permission(p_group_id uuid, p_user_id uuid, p_permission text)`
+
+Grants a direct permission override to a specific member without assigning a role. Idempotent — calling it again with the same arguments is a no-op. The override merges into the member's `permissions[]` in `user_claims` immediately via trigger.
+
+##### `revoke_member_permission(p_group_id uuid, p_user_id uuid, p_permission text)`
+
+Removes a direct permission override. Raises if the override does not exist. Claims are updated immediately via trigger.
+
+##### `list_member_permissions(p_group_id uuid, p_user_id uuid DEFAULT NULL) → table`
+
+Returns `(user_id, permission, created_at)` rows for direct overrides in a group. Pass `p_user_id` to filter to one member.
 
 ##### `accept_invite(p_invite_id uuid)`
 

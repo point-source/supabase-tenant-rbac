@@ -2,12 +2,13 @@
 
 ## What This Project Is
 
-A PostgreSQL TLE (Trusted Language Extension) that provides multi-tenant RBAC for Supabase projects. Distributed via [database.dev](https://database.dev/pointsource/supabase_rbac) as `pointsource-supabase_rbac`. Current version: **5.0.0**.
+A PostgreSQL TLE (Trusted Language Extension) that provides multi-tenant RBAC for Supabase projects. Distributed via [database.dev](https://database.dev/pointsource/supabase_rbac) as `pointsource-supabase_rbac`. Current version: **5.2.0**.
 
 ## Repository Layout
 
 ```
-supabase_rbac--5.0.0.sql       # Current extension full install script (READ THIS FIRST)
+supabase_rbac--5.2.0.sql       # Current extension full install script (READ THIS FIRST)
+supabase_rbac--5.1.0--5.2.0.sql # Upgrade path: 5.1.0 → 5.2.0
 supabase_rbac--X.Y.Z.sql       # Prior version install scripts (keep for reference)
 supabase_rbac.control          # Extension metadata (default_version lives here)
 CHANGELOG.md                   # Version history
@@ -15,8 +16,6 @@ CHANGELOG.md                   # Version history
 examples/
   policies/
     quickstart.sql             # Recommended starter RLS for rbac.* tables
-    role_centric.sql           # Example RLS using role names (owner/admin/viewer)
-    permission_centric.sql     # Example RLS using dot-notation permissions
     storage_rls.sql            # Storage RLS examples
     custom_table_isolation.sql # RLS for custom app tables with group_id FK
     hardened_setup.sql         # REVOKE ALL + targeted GRANT defense-in-depth
@@ -106,17 +105,18 @@ When making changes to the core extension:
 - **Fresh claims on every request**: `db_pre_request` reads `rbac.user_claims` on each API call.
 - **Auth Hook**: `custom_access_token_hook` injects group claims into JWTs at token creation (optional, complements db_pre_request).
 - **Role validation**: All role assignments validated against the `roles` table.
-- **SECURITY INVOKER by default**: Management RPCs respect RLS. Only `create_group` and `accept_invite` are DEFINER (bootstrap operations).
+- **SECURITY INVOKER by default**: Management RPCs respect RLS. Only `create_group` and `accept_invite` are DEFINER (bootstrap operations). The three trigger functions (`_sync_member_metadata`, `_sync_member_permission`, `_on_role_permissions_change`) are also DEFINER so they can write to `user_claims` without requiring INSERT/UPDATE grants on `authenticated`.
 
 ## Core Tables (in `@extschema@`)
 
 | Table | Purpose |
 |-------|---------|
 | `groups` | Tenants/orgs. Has `id`, `name`, `metadata`, timestamps |
-| `members` | One row per membership. `group_id`, `user_id`, `roles text[]`, `metadata` |
+| `members` | One row per membership. `group_id`, `user_id`, `roles text[]`, `metadata`. UNIQUE `(group_id, user_id)` constraint. |
 | `invites` | Invite codes. `group_id`, `roles text[]`, `invited_by`, `expires_at` |
 | `roles` | Global role definitions. `name text PK`, `description`, `permissions text[]`. Pre-seeded with `'owner'` |
 | `user_claims` | Claims cache. `user_id uuid PK`, `claims jsonb`. Format: `{"<gid>": {"roles": [...], "permissions": [...]}}`. Auto-managed by triggers. |
+| `member_permissions` | Direct per-member permission overrides. `group_id`, `user_id`, `permission`. UNIQUE `(group_id, user_id, permission)`. FK to `members(group_id, user_id)` ON DELETE CASCADE. Auto-merged into claims by trigger. |
 
 ## Core Functions
 
@@ -138,6 +138,11 @@ When making changes to the core extension:
 - `update_member_roles(p_group_id uuid, p_user_id uuid, p_roles text[])` [INVOKER]
 - `list_members(p_group_id uuid)` → table [INVOKER]
 - `accept_invite(p_invite_id uuid)` [DEFINER]
+- `create_invite(p_group_id uuid, p_roles text[], p_expires_at timestamptz DEFAULT NULL)` → uuid [INVOKER]
+- `delete_invite(p_invite_id uuid)` [INVOKER]
+- `grant_member_permission(p_group_id uuid, p_user_id uuid, p_permission text)` [INVOKER]
+- `revoke_member_permission(p_group_id uuid, p_user_id uuid, p_permission text)` [INVOKER]
+- `list_member_permissions(p_group_id uuid, p_user_id uuid DEFAULT NULL)` → table [INVOKER]
 
 ### Role & Permission RPCs (service_role only)
 - `create_role(p_name text, p_description text)` [service_role]
@@ -159,6 +164,13 @@ members (INSERT/UPDATE/DELETE)
         └── calls: _sync_member_metadata()  [SECURITY INVOKER]
             └── calls: _build_user_claims(user_id)
                 └── resolves permissions from roles.permissions[]
+                └── + direct overrides from member_permissions
+            └── upserts: rbac.user_claims
+
+member_permissions (INSERT/DELETE)
+    └── trigger: on_member_permission_change
+        └── calls: _sync_member_permission()  [SECURITY INVOKER]
+            └── calls: _build_user_claims(user_id)
             └── upserts: rbac.user_claims
 
 roles (UPDATE permissions[])
@@ -192,6 +204,7 @@ RLS policies call:
 - **RLS policies required**: The extension ships with zero RLS policies. You MUST add policies on `rbac.groups`, `rbac.members`, `rbac.invites`, and `rbac.roles` or nothing will work. See `examples/policies/quickstart.sql`.
 - **Role validation**: All roles used in `create_group()`, `add_member()`, `update_member_roles()`, and invite `roles` arrays must exist in `rbac.roles`. Add them via `create_role()` or direct INSERT first.
 - **Storage requests bypass db_pre_request**: `get_claims()` falls back to `_get_user_groups()` which reads `rbac.user_claims` directly, so Storage RLS still works.
-- **user_claims is auto-managed**: Never write to `rbac.user_claims` directly. Two triggers keep it in sync: `on_change_sync_member_metadata` (when memberships change) and `on_role_permissions_change` (when role permissions change). The table has RLS enabled (deny-all except for the defined roles).
+- **user_claims is auto-managed**: Never write to `rbac.user_claims` directly. Three triggers keep it in sync: `on_change_sync_member_metadata` (membership changes), `on_role_permissions_change` (role permission changes), and `on_member_permission_change` (direct permission overrides). The table has RLS enabled (deny-all except for the defined roles).
+- **member_permissions is auto-managed by trigger**: Grant/revoke via `grant_member_permission()` and `revoke_member_permission()` RPCs (or direct INSERT/DELETE if RLS allows). The FK to `members(group_id, user_id)` ensures overrides are automatically cleaned up when a member is removed.
 - **Permission management is service_role only**: `create_role`, `delete_role`, `list_roles`, `set_role_permissions`, `grant_permission`, `revoke_permission`, `list_role_permissions` are app-author operations intended for migrations/admin tooling. Not exposed via public wrappers.
 - **TLE backup/restore**: Supabase logical backups may fail to restore if `auth.users` isn't available. See [Issue #41](https://github.com/point-source/supabase-tenant-rbac/issues/41).

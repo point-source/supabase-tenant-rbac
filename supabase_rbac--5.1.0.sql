@@ -1,13 +1,5 @@
-CREATE SCHEMA IF NOT EXISTS rbac;
-
-SELECT
-  pgtle.install_extension (
-    'pointsource-supabase_rbac',
-    '5.2.0',
-    'Supabase Multi-Tenant Role-based Access Control',
-    $_pgtle_$
 -- ═══════════════════════════════════════════════════════════════════════════════
--- supabase_rbac v5.2.0 — Multi-Tenant RBAC for Supabase
+-- supabase_rbac v5.1.0 — Multi-Tenant RBAC for Supabase
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- Install in a dedicated schema (e.g. rbac) that is NOT in PostgREST's exposed
 -- schemas. Tables are accessed exclusively through RPC functions. Public wrapper
@@ -301,13 +293,11 @@ AS $function$
 $function$;
 
 -- Trigger function: rebuild user's entire claims from members table
--- Fires on INSERT/UPDATE/DELETE on members.
--- SECURITY DEFINER so it can write to user_claims regardless of the calling role.
--- Trigger functions (RETURNS trigger) cannot be called directly via RPC or REST.
+-- Fires on INSERT/UPDATE/DELETE on members
 CREATE OR REPLACE FUNCTION @extschema@._sync_member_metadata()
 RETURNS trigger
 LANGUAGE plpgsql
-SECURITY DEFINER
+-- No SECURITY DEFINER — writes to extension-owned user_claims table
 SET search_path = @extschema@
 AS $function$
 DECLARE
@@ -349,12 +339,10 @@ $function$;
 
 -- Trigger function: rebuild claims when a direct member permission is added or removed.
 -- Fires on INSERT/DELETE on member_permissions.
--- SECURITY DEFINER so it can write to user_claims regardless of the calling role.
--- Trigger functions (RETURNS trigger) cannot be called directly via RPC or REST.
 CREATE OR REPLACE FUNCTION @extschema@._sync_member_permission()
 RETURNS trigger
 LANGUAGE plpgsql
-SECURITY DEFINER
+-- No SECURITY DEFINER — writes to extension-owned user_claims table
 SET search_path = @extschema@
 AS $function$
 DECLARE
@@ -382,12 +370,9 @@ $function$;
 
 -- Trigger function: rebuild claims for all users holding a role whose
 -- permissions column was changed. Fires on UPDATE of roles.
--- SECURITY DEFINER so it can write to user_claims regardless of the calling role.
--- Trigger functions (RETURNS trigger) cannot be called directly via RPC or REST.
 CREATE OR REPLACE FUNCTION @extschema@._on_role_permissions_change()
 RETURNS trigger
 LANGUAGE plpgsql
-SECURITY DEFINER
 SET search_path = @extschema@
 AS $function$
 DECLARE
@@ -428,9 +413,6 @@ AS $function$
     )::jsonb
 $function$;
 
-REVOKE EXECUTE ON FUNCTION @extschema@.get_claims() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION @extschema@.get_claims() TO authenticated, anon, service_role;
-
 -- Check if user has a specific role in a group
 CREATE OR REPLACE FUNCTION @extschema@.has_role(group_id uuid, role text)
 RETURNS boolean
@@ -459,9 +441,6 @@ BEGIN
     END IF;
 END;
 $function$;
-
-REVOKE EXECUTE ON FUNCTION @extschema@.has_role(uuid, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION @extschema@.has_role(uuid, text) TO authenticated, anon, service_role;
 
 -- Check if user is a member of a group (any role)
 CREATE OR REPLACE FUNCTION @extschema@.is_member(group_id uuid)
@@ -492,9 +471,6 @@ BEGIN
 END;
 $function$;
 
-REVOKE EXECUTE ON FUNCTION @extschema@.is_member(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION @extschema@.is_member(uuid) TO authenticated, anon, service_role;
-
 -- Check if user has ANY of the listed roles in a group
 CREATE OR REPLACE FUNCTION @extschema@.has_any_role(group_id uuid, roles text[])
 RETURNS boolean
@@ -524,9 +500,6 @@ BEGIN
 END;
 $function$;
 
-REVOKE EXECUTE ON FUNCTION @extschema@.has_any_role(uuid, text[]) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION @extschema@.has_any_role(uuid, text[]) TO authenticated, anon, service_role;
-
 -- Check if user has ALL of the listed roles in a group
 CREATE OR REPLACE FUNCTION @extschema@.has_all_roles(group_id uuid, roles text[])
 RETURNS boolean
@@ -555,9 +528,6 @@ BEGIN
     END IF;
 END;
 $function$;
-
-REVOKE EXECUTE ON FUNCTION @extschema@.has_all_roles(uuid, text[]) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION @extschema@.has_all_roles(uuid, text[]) TO authenticated, anon, service_role;
 
 -- Check if user has a specific resolved permission in a group
 CREATE OR REPLACE FUNCTION @extschema@.has_permission(group_id uuid, permission text)
@@ -856,58 +826,6 @@ $function$;
 REVOKE EXECUTE ON FUNCTION @extschema@.accept_invite(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION @extschema@.accept_invite(uuid) TO authenticated;
 
--- Create an invite for a group. SECURITY INVOKER — RLS enforced.
--- The INSERT is subject to the app-author's RLS policy on invites, which controls
--- who may create invites (e.g. must have a specific role or permission in the group).
-CREATE OR REPLACE FUNCTION @extschema@.create_invite(
-    p_group_id   uuid,
-    p_roles      text[],
-    p_expires_at timestamptz DEFAULT NULL
-)
-RETURNS uuid
-LANGUAGE plpgsql
-SET search_path = @extschema@
-AS $function$
-DECLARE
-    _user_id   uuid := auth.uid();
-    _invite_id uuid;
-BEGIN
-    IF _user_id IS NULL THEN
-        RAISE EXCEPTION 'Not authenticated';
-    END IF;
-
-    PERFORM _validate_roles(p_roles);
-
-    INSERT INTO @extschema@.invites (group_id, roles, invited_by, expires_at)
-    VALUES (p_group_id, p_roles, _user_id, p_expires_at)
-    RETURNING id INTO _invite_id;
-
-    RETURN _invite_id;
-END;
-$function$;
-
-REVOKE EXECUTE ON FUNCTION @extschema@.create_invite(uuid, text[], timestamptz) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION @extschema@.create_invite(uuid, text[], timestamptz) TO authenticated;
-
--- Delete an invite. SECURITY INVOKER — RLS enforced.
--- Raises if the invite is not found or not authorized.
-CREATE OR REPLACE FUNCTION @extschema@.delete_invite(p_invite_id uuid)
-RETURNS void
-LANGUAGE plpgsql
-SET search_path = @extschema@
-AS $function$
-BEGIN
-    DELETE FROM @extschema@.invites WHERE id = p_invite_id;
-
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'Invite not found or not authorized';
-    END IF;
-END;
-$function$;
-
-REVOKE EXECUTE ON FUNCTION @extschema@.delete_invite(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION @extschema@.delete_invite(uuid) TO authenticated;
-
 -- Grant a direct permission override to a member. SECURITY INVOKER — RLS enforced.
 -- Idempotent: ON CONFLICT DO NOTHING prevents duplicates.
 --
@@ -963,12 +881,6 @@ BEGIN
     IF NOT is_member(p_group_id) THEN
         RAISE EXCEPTION 'permission denied — caller is not a member of the target group'
             USING ERRCODE = 'insufficient_privilege';
-    END IF;
-
-    -- Reject empty permission strings.
-    IF trim(coalesce(p_permission, '')) = '' THEN
-        RAISE EXCEPTION 'permission must not be empty'
-            USING ERRCODE = 'invalid_parameter_value';
     END IF;
 
     DELETE FROM @extschema@.member_permissions
@@ -1209,16 +1121,15 @@ GRANT USAGE ON SCHEMA @extschema@ TO authenticator, supabase_auth_admin;
 -- Table DML grants (RLS controls which rows)
 GRANT SELECT, INSERT, UPDATE, DELETE ON @extschema@.groups  TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON @extschema@.members TO authenticated;
-GRANT SELECT, INSERT, UPDATE, DELETE ON @extschema@.invites TO authenticated;
+GRANT SELECT, UPDATE ON @extschema@.invites TO authenticated;
 -- roles: authenticated can SELECT (for _validate_roles via INVOKER RPCs) but not mutate.
 -- All role/permission mutations go through service_role-only RPCs.
 GRANT SELECT ON @extschema@.roles TO authenticated;
 
--- user_claims: SELECT is needed for _get_user_groups() fallback (Storage RLS path).
--- No INSERT/UPDATE for authenticated — the three trigger functions that write to
--- user_claims are now SECURITY DEFINER and run as the function owner (postgres),
--- not as the calling role. Removing INSERT/UPDATE closes the claims forgery vector.
-GRANT SELECT ON @extschema@.user_claims TO authenticated;
+-- user_claims: authenticated needs INSERT/UPDATE for the trigger (runs as authenticated
+-- when fired by SECURITY INVOKER RPCs like add_member/remove_member/update_member_roles).
+-- SELECT is needed for _get_user_groups() fallback (Storage RLS path).
+GRANT SELECT, INSERT, UPDATE ON @extschema@.user_claims TO authenticated;
 -- authenticator needs SELECT for db_pre_request() (SECURITY INVOKER, runs as authenticator)
 GRANT SELECT ON @extschema@.user_claims TO authenticator;
 -- supabase_auth_admin needs SELECT for custom_access_token_hook()
@@ -1279,7 +1190,3 @@ NOTIFY pgrst, 'reload config';
 -- To remove previously created wrappers, see:
 --   examples/setup/remove_public_wrappers.sql
 -- ═══════════════════════════════════════════════════════════════════════════════
-$_pgtle_$
-  );
-
-CREATE EXTENSION "pointsource-supabase_rbac" SCHEMA rbac VERSION '5.2.0';
