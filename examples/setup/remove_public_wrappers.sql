@@ -46,6 +46,19 @@ DROP FUNCTION IF EXISTS public.grant_member_permission(uuid, uuid, text);
 DROP FUNCTION IF EXISTS public.revoke_member_permission(uuid, uuid, text);
 DROP FUNCTION IF EXISTS public.list_member_permissions(uuid, uuid);
 
+-- Role/Permission management RPCs (service_role)
+DROP FUNCTION IF EXISTS public.create_role(text, text, text[], text[]);
+DROP FUNCTION IF EXISTS public.delete_role(text);
+DROP FUNCTION IF EXISTS public.list_roles();
+DROP FUNCTION IF EXISTS public.set_role_permissions(text, text[]);
+DROP FUNCTION IF EXISTS public.grant_permission(text, text);
+DROP FUNCTION IF EXISTS public.revoke_permission(text, text);
+DROP FUNCTION IF EXISTS public.list_role_permissions(text);
+DROP FUNCTION IF EXISTS public.create_permission(text, text);
+DROP FUNCTION IF EXISTS public.delete_permission(text);
+DROP FUNCTION IF EXISTS public.list_permissions();
+DROP FUNCTION IF EXISTS public.set_role_grantable_roles(text, text[]);
+
 -- Auth Hook wrapper
 -- NOTE: If you drop this wrapper, update config.toml to point the auth hook
 -- directly at the rbac schema function instead of the public wrapper:

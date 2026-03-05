@@ -1,6 +1,13 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- RLS policies for the RBAC extension tables (installed in the rbac schema).
--- These are the starter policies used by the local dev environment.
+-- These are the starter policies for the local dev environment.
+--
+-- STYLE NOTE — Permission-based policies:
+-- These policies use has_permission() (e.g., has_permission(id, 'group.update'))
+-- rather than has_role() (e.g., has_role(id, 'owner')).
+-- Permission-based policies are more granular and support direct member_permissions
+-- overrides. The quickstart example (examples/policies/quickstart.sql) shows the
+-- simpler role-based style. Both are valid; choose the approach that fits your app.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 -- ── groups ──────────────────────────────────────────────────────────────────
@@ -13,7 +20,7 @@ to authenticated
 using (rbac.is_member(id));
 
 -- NOTE: No INSERT policy — group creation goes through create_group() RPC
--- (SECURITY DEFINER), which bypasses RLS. Direct INSERTs are not supported.
+-- (SECURITY DEFINER), which bypasses RLS.
 
 create policy "Has update permission"
 on rbac.groups
@@ -37,47 +44,60 @@ on rbac.members
 as permissive
 for select
 to authenticated
-using (rbac.has_permission(group_id, 'group_user.read'::text));
+using (rbac.is_member(group_id));
 
-create policy "Has create permission"
+create policy "Has manage permission"
 on rbac.members
 as permissive
 for insert
 to authenticated
-with check (rbac.has_permission(group_id, 'group_user.create'::text));
+with check (rbac.has_permission(group_id, 'members.manage'::text));
 
 create policy "Has update permission"
 on rbac.members
 as permissive
 for update
 to authenticated
-using (rbac.has_permission(group_id, 'group_user.update'::text))
-with check (rbac.has_permission(group_id, 'group_user.update'::text));
+using (rbac.has_permission(group_id, 'members.manage'::text))
+with check (rbac.has_permission(group_id, 'members.manage'::text));
 
 create policy "Has delete permission"
 on rbac.members
 as permissive
 for delete
 to authenticated
-using (rbac.has_permission(group_id, 'group_user.delete'::text));
+using (
+    rbac.has_permission(group_id, 'members.manage'::text)
+    OR user_id = auth.uid()
+);
 
 -- ── invites ─────────────────────────────────────────────────────────────────
 
-create policy "Has invite permission"
+create policy "Has manage permission"
 on rbac.invites
 as permissive
 for all
 to authenticated
-using (rbac.has_permission(group_id, 'group_user.invite'::text))
-with check (rbac.has_permission(group_id, 'group_user.invite'::text));
+using (rbac.has_permission(group_id, 'members.manage'::text))
+with check (rbac.has_permission(group_id, 'members.manage'::text));
 
 -- ── roles ───────────────────────────────────────────────────────────────────
--- Role definitions are hidden from authenticated users by default (v5.2.1+).
+-- Role definitions are hidden from authenticated users by default.
 -- authenticated has no table-level SELECT on rbac.roles (revoked by extension).
--- To opt-in: GRANT SELECT ON rbac.roles TO authenticated; (plus a policy below).
 
 create policy "Service role can manage roles"
 on rbac.roles
+as permissive
+for all
+to service_role
+using (true)
+with check (true);
+
+-- ── permissions ─────────────────────────────────────────────────────────────
+-- The permissions registry is managed exclusively by service_role.
+
+create policy "Service role can manage permissions"
+on rbac.permissions
 as permissive
 for all
 to service_role
@@ -93,13 +113,27 @@ for select
 to authenticated
 using (rbac.is_member(group_id));
 
-create policy "Has manage_access permission"
+-- Grant: caller must have the target permission in their grantable_permissions
+create policy "Has grantable permission"
 on rbac.member_permissions
 as permissive
-for all
+for insert
 to authenticated
-using (rbac.has_permission(group_id, 'group.manage_access'::text))
-with check (rbac.has_permission(group_id, 'group.manage_access'::text));
+with check (
+    (rbac.get_claims() -> group_id::text -> 'grantable_permissions') ? '*'
+    OR (rbac.get_claims() -> group_id::text -> 'grantable_permissions') ? permission
+);
+
+-- Revoke: same scope check for delete
+create policy "Has grantable permission for revoke"
+on rbac.member_permissions
+as permissive
+for delete
+to authenticated
+using (
+    (rbac.get_claims() -> group_id::text -> 'grantable_permissions') ? '*'
+    OR (rbac.get_claims() -> group_id::text -> 'grantable_permissions') ? permission
+);
 
 create policy "Service role has full access"
 on rbac.member_permissions
@@ -110,11 +144,8 @@ using (true)
 with check (true);
 
 -- ── user_claims ─────────────────────────────────────────────────────────────
--- Claims are written exclusively by the three SECURITY DEFINER trigger functions
--- (_sync_member_metadata, _sync_member_permission, _on_role_permissions_change).
--- Those triggers run as the function owner (postgres), not the calling role, so
+-- Claims are written exclusively by SECURITY DEFINER trigger functions.
 -- authenticated does NOT need INSERT/UPDATE on this table.
--- SELECT is needed for _get_user_groups() fallback (Storage RLS path).
 
 create policy "Allow select for authenticator and auth admin"
 on rbac.user_claims

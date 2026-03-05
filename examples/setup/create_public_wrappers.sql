@@ -179,6 +179,104 @@ IF 'rbac' <> 'public' THEN
         AS $f$ SELECT rbac.delete_invite($1) $f$
     $sql$;
 
+    -- ── Role/Permission management RPCs (service_role only) ─────────────────────
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.create_role(
+            p_name text, p_description text DEFAULT NULL,
+            p_permissions text[] DEFAULT '{}'::text[],
+            p_grantable_roles text[] DEFAULT '{}'::text[]
+        )
+        RETURNS void LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.create_role($1, $2, $3, $4) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.delete_role(p_name text)
+        RETURNS void LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.delete_role($1) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.list_roles()
+        RETURNS TABLE(name text, description text, permissions text[], grantable_roles text[], created_at timestamptz)
+        LANGUAGE sql STABLE
+        SET search_path = rbac
+        AS $f$ SELECT * FROM rbac.list_roles() $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.set_role_permissions(
+            p_role_name text, p_permissions text[]
+        )
+        RETURNS void LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.set_role_permissions($1, $2) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.grant_permission(
+            p_role_name text, p_permission text
+        )
+        RETURNS void LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.grant_permission($1, $2) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.revoke_permission(
+            p_role_name text, p_permission text
+        )
+        RETURNS void LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.revoke_permission($1, $2) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.list_role_permissions(
+            p_role_name text DEFAULT NULL
+        )
+        RETURNS TABLE(role_name text, permission text)
+        LANGUAGE sql STABLE
+        SET search_path = rbac
+        AS $f$ SELECT * FROM rbac.list_role_permissions($1) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.create_permission(
+            p_name text, p_description text DEFAULT NULL
+        )
+        RETURNS void LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.create_permission($1, $2) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.delete_permission(p_name text)
+        RETURNS void LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.delete_permission($1) $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.list_permissions()
+        RETURNS TABLE(name text, description text, created_at timestamptz)
+        LANGUAGE sql STABLE
+        SET search_path = rbac
+        AS $f$ SELECT * FROM rbac.list_permissions() $f$
+    $sql$;
+
+    EXECUTE $sql$
+        CREATE OR REPLACE FUNCTION public.set_role_grantable_roles(
+            p_role_name text, p_grantable_roles text[]
+        )
+        RETURNS void LANGUAGE sql
+        SET search_path = rbac
+        AS $f$ SELECT rbac.set_role_grantable_roles($1, $2) $f$
+    $sql$;
+
     -- ── Auth Hook wrapper ────────────────────────────────────────────────────
     -- NOTE: If you create this wrapper, update config.toml to point to the
     -- public wrapper instead of the schema-qualified function:
@@ -240,6 +338,31 @@ IF 'rbac' <> 'public' THEN
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.grant_member_permission(uuid, uuid, text) TO authenticated';
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.revoke_member_permission(uuid, uuid, text) TO authenticated';
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.list_member_permissions(uuid, uuid) TO authenticated';
+
+    -- Role/Permission management RPCs: service_role only
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.create_role(text, text, text[], text[]) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.delete_role(text) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.list_roles() FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.set_role_permissions(text, text[]) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.grant_permission(text, text) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.revoke_permission(text, text) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.list_role_permissions(text) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.create_permission(text, text) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.delete_permission(text) FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.list_permissions() FROM PUBLIC';
+    EXECUTE 'REVOKE EXECUTE ON FUNCTION public.set_role_grantable_roles(text, text[]) FROM PUBLIC';
+
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.create_role(text, text, text[], text[]) TO service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.delete_role(text) TO service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.list_roles() TO service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.set_role_permissions(text, text[]) TO service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.grant_permission(text, text) TO service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.revoke_permission(text, text) TO service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.list_role_permissions(text) TO service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.create_permission(text, text) TO service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.delete_permission(text) TO service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.list_permissions() TO service_role';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.set_role_grantable_roles(text, text[]) TO service_role';
 
     -- Auth hook: supabase_auth_admin only
     EXECUTE 'REVOKE EXECUTE ON FUNCTION public.custom_access_token_hook(jsonb) FROM PUBLIC';

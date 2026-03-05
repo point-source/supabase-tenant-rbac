@@ -41,7 +41,7 @@ Deno.serve(async (req) => {
 
   if (error) {
     console.error(`Error accepting invite ${invite_code}: ${error.message}`);
-    return new Response(error.message, { status: 400 });
+    return new Response("Unable to accept invite", { status: 400 });
   }
 
   return new Response(null, { status: 201 });

@@ -1,246 +1,226 @@
 # Security Model
 
-## Design Principles
+This document describes the security model of the Supabase Tenant RBAC extension — what attacks it defends against, how the defenses work, and what the known limitations are.
 
-### 1. Deny-All by Default
-All four tables (`groups`, `members`, `invites`, `roles`) have RLS enabled with **no policies** on install. Every operation is rejected until the database administrator explicitly adds policies. This means a misconfigured install fails closed (too restrictive) rather than open (too permissive).
+## Table of Contents
 
-### 2. Fresh Claims on Every Request
-Rather than trusting potentially stale JWT claims, `db_pre_request()` reads `rbac.user_claims` directly on every PostgREST API request. This means:
-- Role changes take effect immediately (no waiting for JWT expiry)
-- Revoked access cannot be bypassed with an old JWT
-- There is a small per-request DB query cost (typically negligible)
-
-This freshness guarantee also applies to Supabase Storage. `get_claims()` falls back to `_get_user_groups()` (which reads `rbac.user_claims` directly) rather than the JWT, so Storage RLS policies always see current data.
-
-The `custom_access_token_hook` provides a complementary path: it embeds claims in JWTs at token creation. JWT claims may become stale if membership changes without a new token, but the db_pre_request path always prevails for API requests.
-
-### 3. Private Schema Isolation
-Tables live in a private schema (e.g. `rbac`) that is NOT in PostgREST's `db_schemas`. This means:
-- Tables cannot be accessed directly via REST API
-- All interaction goes through RPC functions
-- Reduces attack surface from direct table manipulation
-
-All functions use `SET search_path = @extschema@` to prevent search_path injection.
-
-### 4. Role Validation
-All management RPCs (`create_group`, `add_member`, `update_member_roles`, `accept_invite`) validate role assignments against the `roles` table. Free-text role strings from v4.x are replaced by a validated vocabulary.
-
-### 5. Minimal SECURITY DEFINER Surface
-Six functions are `SECURITY DEFINER`:
-- `create_group()` — bootstraps membership when no prior RLS-satisfying row exists
-- `accept_invite()` — writes invites + members atomically, bypassing RLS
-- `_sync_member_metadata()` — trigger function that writes `rbac.user_claims`; runs as function owner (postgres) to avoid requiring `authenticated` INSERT/UPDATE on user_claims
-- `_sync_member_permission()` — trigger function that writes `rbac.user_claims`; same rationale
-- `_on_role_permissions_change()` — trigger function that writes `rbac.user_claims` for all affected users; same rationale
-- `_validate_roles()` — internal helper that reads `rbac.roles.name` to validate a role array; made DEFINER (v5.2.1) so INVOKER management RPCs can validate roles without the caller needing SELECT on `rbac.roles`
-
-The three trigger functions (`RETURNS trigger`) cannot be called directly via RPC or REST — only the database trigger mechanism can invoke them. SECURITY DEFINER on trigger functions does not expand the callable API surface. Similarly, `_validate_roles` has `REVOKE EXECUTE FROM PUBLIC` — no external caller has EXECUTE on it.
-
-All other functions are `SECURITY INVOKER`:
-- `db_pre_request()` — reads `rbac.user_claims` (extension-owned, not privileged)
-- `_get_user_groups()` — reads `rbac.user_claims` for the Storage fallback path
-- `_build_user_claims()` — reads `members` + `roles`, builds claims JSONB (trigger helper; EXECUTE revoked from PUBLIC)
-- `custom_access_token_hook()` — reads `rbac.user_claims` for JWT injection
-- All RLS helpers (`has_role`, `is_member`, `has_any_role`, `has_all_roles`, `get_claims`, `has_permission`, `has_any_permission`, `has_all_permissions`)
-- All management RPCs (`delete_group`, `add_member`, `remove_member`, `update_member_roles`, `list_members`, `create_invite`, `delete_invite`)
-
-By moving the claims cache from `auth.users` to `rbac.user_claims` (v5.0.0) and making the three write triggers SECURITY DEFINER (v5.2.0), the `authenticated` role no longer needs INSERT/UPDATE on `user_claims`.
-
-### 6. Internal Helpers Locked Down (v5.2.1)
-All five `_`-prefixed internal helper functions have `REVOKE EXECUTE FROM PUBLIC`. Selective re-grants:
-- `_get_user_groups()` → `authenticated, service_role` (Storage RLS fallback via `get_claims()`)
-- `_jwt_is_expired()` → `authenticated, anon, service_role` (called by all RLS helpers)
-- `_build_user_claims(uuid)` — no re-grant (DEFINER trigger functions only)
-- `_validate_roles(text[])` — no re-grant (DEFINER itself; trigger-like internal use)
-- `_set_updated_at()` — no re-grant (trigger mechanism only, returns `trigger`)
-
-### 7. Role Definitions Hidden from Authenticated (v5.2.1)
-`authenticated` has no table-level `SELECT` on `rbac.roles`. The role vocabulary (names, descriptions, `permissions[]` arrays) is an admin/migration concern, not end-user data. App-authors who want users to browse role definitions must explicitly opt in:
-```sql
-GRANT SELECT ON rbac.roles TO authenticated;
-CREATE POLICY "Authenticated users can read roles"
-    ON rbac.roles FOR SELECT TO authenticated USING (true);
-```
+1. [Threat Model](#threat-model)
+2. [Privilege Escalation Prevention](#privilege-escalation-prevention)
+3. [SECURITY DEFINER Audit](#security-definer-audit)
+4. [Deny-All by Default](#deny-all-by-default)
+5. [Private Schema Architecture](#private-schema-architecture)
+6. [Claims Forgery Prevention](#claims-forgery-prevention)
+7. [Storage RLS Freshness](#storage-rls-freshness)
+8. [Known Limitations and Documented Risks](#known-limitations-and-documented-risks)
 
 ---
 
-## Auth Role Tiers
+## Threat Model
 
-The permission-checking functions (`has_role`, `is_member`, `has_any_role`, `has_all_roles`, `has_permission`, `has_any_permission`, `has_all_permissions`) handle four distinct execution contexts:
+The extension is designed to defend against the following classes of attack from authenticated users:
 
-| Context | `auth.role()` | `session_user` | Behavior |
-|---------|---------------|----------------|----------|
-| Authenticated user via API | `authenticated` | `authenticator` | Checks JWT expiry, then checks claims |
-| Anonymous user via API | `anon` | `authenticator` | Always `false` |
-| Trigger / superuser context | varies | `postgres` | Always `true` |
-| Service role | `service_role` | varies | Always `true` |
-| Other (e.g., `authenticator` direct) | other | other | Always `false` |
+**Privilege escalation via role assignment.** A user with limited authority attempts to assign a role they are not authorized to grant — either to themselves or to another member.
 
-The `session_user = 'postgres'` and `service_role` bypasses allow triggers and server-side functions to operate without RBAC checks.
+**Privilege escalation via permission override.** A user attempts to grant a direct permission override that is outside their authorized grant scope.
 
-### JWT Expiry Check
-Every claims-checking function calls `_jwt_is_expired()` first. If the JWT is expired or missing, an `invalid_jwt` exception is raised.
+**Invite escalation.** A user creates an invite with roles beyond their authorized grant scope, allowing a new user to join with elevated privileges.
 
----
+**Claims forgery.** An authenticated user attempts to directly write to `user_claims` to inject false claims.
 
-## SECURITY DEFINER Function Analysis (6 Functions)
+**Direct table access.** A user attempts to read or write internal RBAC tables directly via the REST API, bypassing RPCs.
 
-### `db_pre_request()` — SECURITY INVOKER
-- Runs as `authenticator` (the PostgREST session role).
-- Reads `claims` from `rbac.user_claims` for `auth.uid()`.
-- No privileged access needed — `rbac.user_claims` is an extension-owned table.
-- **RPC access restricted**: EXECUTE revoked from PUBLIC, granted only to `authenticator`.
+**Cross-group data access.** A user attempts to read or modify data belonging to a group they are not a member of.
 
-### `_sync_member_metadata()` — SECURITY DEFINER
-- **Trigger-only**: Returns `trigger` type — cannot be called directly via API.
-- Writes to `rbac.user_claims` (upsert). No `auth.users` access required.
-- Runs as the function owner (`postgres`) regardless of which role fired the triggering DML.
-- **Immutability enforcement**: Raises exception if `user_id` or `group_id` is changed on UPDATE.
-- **Why DEFINER**: Allows the authenticated role to be stripped of INSERT/UPDATE on `user_claims`, closing the claims forgery vector (any authenticated user could previously forge claims for any `user_id`).
+The extension does not defend against:
 
-### `_validate_roles()` — SECURITY DEFINER (v5.2.1)
-- Reads `roles.name` from `rbac.roles` to validate a role name array.
-- **Why DEFINER**: `authenticated` no longer has `SELECT` on `rbac.roles` (v5.2.1). DEFINER allows INVOKER management RPCs (`add_member`, `update_member_roles`, `create_invite`) to validate role names without requiring the caller to have table access.
-- **EXECUTE revoked from PUBLIC**: No external caller has EXECUTE. Only DEFINER callers (the management RPCs, which call `_validate_roles` from within their bodies) can invoke it.
-- **No side effects**: Reads only `roles.name`; no writes, no user-controllable output beyond the exception message listing undefined role names (which the caller already supplied).
+**Malicious service_role users.** `service_role` bypasses all RLS and can perform any operation. This is a Supabase platform property, not specific to this extension.
 
-### `_get_user_groups()` — SECURITY INVOKER
-- Reads `claims` from `rbac.user_claims` for `auth.uid()`. Returns `'{}'` for unauthenticated/groupless users.
-- Called by `get_claims()` when `request.groups` is not set (Storage fallback path).
+**Application-level bugs.** If an app author writes an RLS policy that is too permissive, or forgets to add a policy, the extension cannot prevent that.
 
-### `custom_access_token_hook()` — SECURITY INVOKER
-- Called by Supabase Auth at JWT creation time, runs as `supabase_auth_admin`.
-- Reads `claims` from `rbac.user_claims` for `event.user_id`.
-- Injects `app_metadata.groups` into the JWT claims.
-- Per Supabase docs, auth hooks should not be SECURITY DEFINER.
-
-### `create_group()`
-- **Why DEFINER**: The caller has no existing membership, so no RLS policy on `members` can grant INSERT permission for the initial membership row.
-- **Scope**: Creates one `groups` row and one `members` row for `auth.uid()`.
-- **Identity binding**: Uses `auth.uid()` — cannot create groups on behalf of others.
-- **Validates roles**: All roles in `creator_roles` must exist in the `roles` table.
-
-### `accept_invite()`
-- **Why DEFINER**: Must write to `invites` (update accepted status) and `members` (upsert membership) atomically. The user doesn't have group membership yet, so RLS on `members` would block the INSERT.
-- **Identity binding**: Uses `auth.uid()` — cannot accept on behalf of others.
-- **Atomicity**: `SELECT FOR UPDATE` locks the invite row; UPDATE + INSERT in same transaction.
-- **RPC access restricted**: EXECUTE revoked from PUBLIC, granted only to `authenticated`.
+**Audit logging.** The extension does not provide built-in audit trails. App authors who need audit logging should add triggers on `members` and `member_permissions`.
 
 ---
 
-## SECURITY INVOKER RPC Model
+## Privilege Escalation Prevention
 
-Member management RPCs (`delete_group`, `add_member`, `remove_member`, `update_member_roles`, `list_members`) are SECURITY INVOKER. They execute DML against `rbac.*` tables as the calling role (`authenticated`).
+Privilege escalation prevention is built into the management RPCs. It is not left to the app author to implement.
 
-Role and permission management RPCs (`create_role`, `delete_role`, `list_roles`, `set_role_permissions`, `grant_permission`, `revoke_permission`, `list_role_permissions`) are **service_role only** — app-author operations intended for migrations and admin tooling, not end-user API calls.
+### Role Assignment Escalation
 
-This means:
-- The `authenticated` role needs DML grants on `rbac.*` tables (shipped by the extension)
-- RLS policies on `rbac.*` tables control which rows are accessible
-- Consumers define their authorization model via RLS policies
+**Affected RPCs:** `add_member()`, `update_member_roles()`
 
-Example: An `add_member()` call succeeds only if the caller satisfies the INSERT policy on `rbac.members` (e.g., must be an owner of the group).
+**Check:** Before performing the write, the RPC calls `_validate_grantable_roles()`, which reads the caller's `grantable_roles` from the `user_claims` cache and verifies that every role in the target `p_roles` array is within the caller's grant scope.
 
----
+**Example:** An `admin` with `grantable_roles = ['editor', 'viewer']` tries to call `add_member(group_id, user_id, ARRAY['owner'])`. The check reads `'owner'` is not in `['editor', 'viewer']` and raises an error. The INSERT never happens.
 
-## Claims Cache Write Protection
+**Wildcard:** If the caller's `grantable_roles` contains `'*'`, all role assignments are permitted, including roles added after the caller's membership was established.
 
-### Why `authenticated` does not write to `user_claims` (v5.2.0+)
+### Permission Override Escalation
 
-Prior to v5.2.0, the three trigger functions that maintain `user_claims` were SECURITY INVOKER. When fired by `add_member()` or other INVOKER RPCs, the trigger ran as `authenticated`. This meant `authenticated` needed INSERT/UPDATE on `user_claims` — and those table-level grants, combined with the required RLS policies (`WITH CHECK (true)`), allowed **any authenticated user to forge claims for any `user_id`** by directly calling `INSERT INTO rbac.user_claims ...`.
+**Affected RPCs:** `grant_member_permission()`, `revoke_member_permission()`
 
-As of v5.2.0, all three trigger functions are SECURITY DEFINER:
-- `_sync_member_metadata()`
-- `_sync_member_permission()`
-- `_on_role_permissions_change()`
+**Check:** The RPC reads the caller's `grantable_permissions` from the `user_claims` cache and verifies that the target permission is within the caller's grantable scope.
 
-They run as the function owner (`postgres`) regardless of which role triggers the DML on `members`, `member_permissions`, or `roles`. The `authenticated` table grant is reduced to SELECT-only. No INSERT/UPDATE RLS policies on `user_claims` are needed or recommended.
+**Derivation:** `grantable_permissions` is computed at write time by `_build_user_claims()`. It is the union of `roles.permissions[]` for all roles in the caller's `grantable_roles` set. If `grantable_roles` contains `'*'`, then `grantable_permissions` is also `['*']`.
 
-**Trigger functions cannot be called via REST or RPC** — only the database trigger mechanism can invoke them. Making them SECURITY DEFINER does not expand the callable API surface.
+**Symmetry:** `revoke_member_permission()` applies the same check as `grant_member_permission()`. Revocation is also a privileged operation. If an app author tightens `grantable_roles` and existing overrides become unrevocable by normal members, `service_role` can clean them up.
 
-### Migration steps for existing deployments (5.1.0 → 5.2.0)
+### Invite Escalation
 
-1. Apply the upgrade script: `supabase_rbac--5.1.0--5.2.0.sql`
-2. Drop the no-longer-needed RLS policies:
-   ```sql
-   DROP POLICY IF EXISTS "authenticated can insert claims (trigger)" ON rbac.user_claims;
-   DROP POLICY IF EXISTS "Allow authenticated to insert claims" ON rbac.user_claims;
-   DROP POLICY IF EXISTS "authenticated can update claims (trigger)" ON rbac.user_claims;
-   DROP POLICY IF EXISTS "Allow authenticated to update claims" ON rbac.user_claims;
-   ```
-3. Verify no INSERT/UPDATE policies remain on `rbac.user_claims` for `authenticated`.
+**Affected RPC:** `create_invite()`
 
----
+**Check:** Before inserting the invite, the RPC validates the `p_roles` array against the caller's `grantable_roles`, using the same mechanism as `add_member()`. A member cannot create an invite that would grant roles beyond their own grant scope.
 
-## PostgREST Schema Exposure
+**Rationale:** Without this check, a `viewer` could create an invite with `roles = ['owner']`. The invite would sit in the database and the first user to accept it would become an owner — even though the creator never had authority to grant that role.
 
-**Never add `rbac` (or whatever schema you installed the extension in) to PostgREST's `db_schemas`.**
+### Wildcard Scope
 
-If `rbac` is listed in `db_schemas`, PostgREST will expose all `rbac.*` tables directly as REST endpoints, bypassing the RPC-only access model. Even with RLS enabled, direct table access via REST is a significantly larger attack surface than the RPC model.
+A role with `grantable_roles = ['*']` has unlimited grant scope:
 
-The extension's management RPCs (`create_group`, `add_member`, etc.) and RLS helpers (`has_role`, `has_permission`, etc.) are the intended API surface. If you need PostgREST to discover these functions, use the opt-in public wrappers (`examples/setup/create_public_wrappers.sql`), which live in `public` (or another exposed schema) and delegate to the private `rbac.*` originals.
+- Can assign any role that exists in the `roles` table.
+- Can directly grant any permission that exists in the `permissions` table.
+- The wildcard is evaluated at enforcement time against the current set of roles and permissions — it does cover roles added after the caller's membership was established.
 
----
+The pre-seeded `owner` role ships with `grantable_roles = ['*']`. This makes group owners full administrators by default. App authors can change this by calling `set_role_grantable_roles('owner', ARRAY['admin', 'editor', 'viewer'])` to restrict what owners can grant.
 
-## Known Security Considerations
+### Prospective-Only Changes
 
-### Direct Member Permission Override Escalation
+**Important limitation:** Changes to `grantable_roles` on a role definition are prospective only.
 
-**Risk level: Low — same as role assignment; mitigated by RLS**
+When `grantable_roles` is updated on a role, `_on_role_definition_change()` rebuilds the claims cache for all users holding that role. Their cached `grantable_permissions` is recomputed based on the new scope.
 
-`grant_member_permission()` is SECURITY INVOKER and relies on RLS policies on `member_permissions` to enforce who can grant overrides. If you create a policy that allows group admins to write to `member_permissions`, **nothing in the extension prevents an admin from granting a permission they do not hold themselves** (e.g., granting `data.export` without having that permission).
+However, existing memberships and permission overrides that were granted before the change are not revoked. If an `admin` previously granted an `editor` role to a member, and you subsequently remove `editor` from the `admin` role's `grantable_roles`, the existing `editor` membership remains. Future attempts by that `admin` to grant `editor` will be blocked, but the existing grants stand.
 
-**Mitigation**: Scope your write policy to users who have a specific management permission (e.g., `group.manage_access`). If escalation prevention is critical, add a `BEFORE INSERT` trigger on `member_permissions` that validates the granted permission against the granting user's own permissions.
-
-### Cross-Group Permission Grant
-
-**Risk level: None — blocked at two independent layers**
-
-An authenticated user with `group.manage_access` in Group A **cannot** use `grant_member_permission()` or `revoke_member_permission()` to write permission overrides in Group B.
-
-**Layer 1 — in-function guard**: Both RPCs call `is_member(p_group_id)` before any DML. If the caller is not a member of the target group, an `insufficient_privilege` exception is raised immediately — before RLS is evaluated and before the INSERT/DELETE is attempted. `is_member()` returns `true` for `postgres` and `service_role` so backend callers are unaffected.
-
-**Layer 2 — RLS WITH CHECK**: Even if the in-function guard were bypassed (e.g., via a future `CREATE OR REPLACE`), the consumer's write policy (`has_permission(group_id, 'group.manage_access')`) checks the target group's `group_id` column, not the caller's home group. A cross-group write would fail the WITH CHECK constraint.
-
-**FK as join-guard**: `member_permissions` has a composite FK to `members(group_id, user_id)`. A permission cannot be granted to a `(group_id, user_id)` pair that does not exist in `members` — so this table cannot be used to create memberships.
-
-### `request.groups` is a Trusted Session Variable
-
-**Risk level: Low — requires a consumer to create a vulnerable function**
-
-`get_claims()` reads the `request.groups` session config key, which is set by `db_pre_request()`. Any PostgreSQL function can overwrite this key using `set_config('request.groups', ...)`. If a consumer creates an RPC function that writes user-controlled input to `request.groups`, an end user could spoof their group membership.
-
-**Mitigation**: Never write a function that passes user input to `set_config('request.groups', ...)`.
-
-### Role Permissions Change Trigger Cost
-
-**Risk level: Informational — no security impact**
-
-When `set_role_permissions()`, `grant_permission()`, or `revoke_permission()` changes a role's `permissions[]`, the `on_role_permissions_change` trigger rebuilds claims for every user holding that role. For widely-assigned roles (e.g., a `viewer` role held by thousands of users), this is an O(N) write operation.
-
-**Mitigation**: Permission changes are admin/migration operations, not per-request operations. Run them during low-traffic windows for large deployments. The WHEN condition (`OLD.permissions IS DISTINCT FROM NEW.permissions`) ensures the trigger only fires when permissions actually change, not on every role UPDATE.
-
-### Inviter Permission Not Re-Checked at Acceptance
-
-**Risk level: Low**
-
-Once an invite is created, `accept_invite()` validates the invite itself but does not re-verify the inviter's current permissions. If the inviter's access is revoked after creating an invite, the invite remains valid.
-
-**Mitigation**: Set `expires_at` on sensitive invites. Delete invites when revoking access.
+App authors are responsible for cleanup when they tighten grant scope. `service_role` can always perform direct revocations.
 
 ---
 
-## Edge Function Security (`supabase/functions/invite/index.ts`)
+## SECURITY DEFINER Audit
 
-The edge function is a thin HTTP wrapper. All invite validation, atomicity, and identity enforcement live in the `accept_invite()` database function.
+The extension minimizes SECURITY DEFINER surface. Only 8 functions are SECURITY DEFINER. Each has a documented justification and documented trust boundary.
 
-| Aspect | Status | Notes |
-|--------|--------|-------|
-| JWT verification | Delegated to database | User's JWT forwarded to RPC; PostgREST verifies it |
-| User identity | Enforced by `auth.uid()` | From verified JWT, not caller-supplied |
-| Invite reuse prevention | Implemented | `SELECT FOR UPDATE` + `user_id IS NULL AND accepted_at IS NULL` |
-| Atomicity | Implemented | UPDATE invite + UPSERT member in single transaction |
-| Service role usage | Not required | Edge function uses user's own JWT |
-| Invite expiry | Implemented | `expires_at` checked; null means no expiry |
-| Role validation | Implemented | Invite roles validated against `roles` table on acceptance |
+| Function | Why DEFINER | Trust Boundary |
+|----------|-------------|----------------|
+| `create_group(p_name, p_metadata, p_creator_roles)` | Caller has no prior membership in the new group. Without DEFINER, the INSERT into `groups` and `members` would fail RLS. | Only creates the group row and adds the caller as a member. Does not bypass RLS on any other table or any subsequent operation. Role names are validated against `rbac.roles`. |
+| `accept_invite(p_invite_id)` | Caller has no prior membership in the target group. Without DEFINER, the upsert into `members` would fail RLS. | Validates invite expiry and unused status. Uses `auth.uid()` (not a caller-supplied parameter) to bind the membership. Cannot accept an invite on behalf of another user. |
+| `_sync_member_metadata()` | Trigger function. Must write to `user_claims` without requiring INSERT/UPDATE grants for `authenticated`. | Cannot be called directly via RPC or REST. Only fires as the `on_change_sync_member_metadata` trigger on the `members` table. Writes only to `user_claims` for the affected user. |
+| `_sync_member_permission()` | Trigger function. Must write to `user_claims` without requiring INSERT/UPDATE grants for `authenticated`. | Cannot be called directly via RPC or REST. Only fires as the `on_member_permission_change` trigger on `member_permissions`. Writes only to `user_claims` for the affected user. |
+| `_on_role_definition_change()` | Trigger function. Must write to `user_claims` for multiple users (all holders of the changed role) without requiring broad grants. | Cannot be called directly via RPC or REST. Only fires as the `on_role_definition_change` trigger on `roles`. Writes only to `user_claims`. |
+| `_validate_roles(p_roles text[])` | INVOKER management RPCs need to validate role names against `rbac.roles`, but `authenticated` has no SELECT on that table by default. | Reads only `roles.name`. No writes. Output is limited to an exception message that names the invalid role — no other data is exposed. Cannot be called with a role that `authenticated` does not know about already (they supplied the role name as a parameter). |
+| `_validate_permissions(p_permissions text[])` | INVOKER management RPCs need to validate permission names against `rbac.permissions`, but `authenticated` has no SELECT on that table by default. | Reads only `permissions.name`. No writes. Same information-exposure rationale as `_validate_roles`. |
+| `_validate_grantable_roles(p_group_id, p_roles)` | INVOKER management RPCs need to check the caller's cached `grantable_roles` and validate the target roles fall within scope. | Reads `user_claims` for `auth.uid()` (the caller's own row). Validates target roles against `grantable_roles` from that row. No writes. Cannot read another user's claims. |
+
+---
+
+## Deny-All by Default
+
+All extension tables have Row Level Security enabled with zero policies on install. This means:
+
+- No `authenticated` user can SELECT, INSERT, UPDATE, or DELETE from any `rbac.*` table after install.
+- Nothing works until the app author explicitly adds RLS policies.
+
+This is the safest default: a misconfigured system fails closed (access denied) rather than open.
+
+The recommended starting point for RLS policies is `examples/policies/quickstart.sql`. This file provides sensible policies for all six extension tables using the pre-seeded `owner` role.
+
+---
+
+## Private Schema Architecture
+
+All extension tables live in the `rbac` schema (the extension schema specified at `CREATE EXTENSION` time). This schema is intentionally not exposed via PostgREST.
+
+PostgREST exposes schemas listed in `db_schemas` in your `config.toml` or project settings. The `rbac` schema should not be in that list. As long as it is not exposed:
+
+- No user can issue a REST GET/POST/PATCH/DELETE against `rbac.*` tables, even if they have table-level privileges.
+- All interaction goes through RPCs in the `rbac` schema (or public wrappers, if created).
+
+**Public wrappers are opt-in.** The default install has zero public surface. To expose RPCs to PostgREST for use in the REST API (e.g., via `supabase.functions.invoke` or direct HTTP calls), run `examples/setup/create_public_wrappers.sql`. These are thin pass-through functions in the `public` schema that delegate to the `rbac` originals. The `rbac` originals retain their security properties.
+
+**`anon` has no grants.** The `anon` role has no EXECUTE on any extension function and no SELECT on any extension table. Unauthenticated requests cannot call any extension function.
+
+---
+
+## Claims Forgery Prevention
+
+The `user_claims` table is the authoritative source for all authorization decisions. An attacker who could write to this table could grant themselves arbitrary permissions.
+
+**Why authenticated users cannot write to user_claims:**
+
+1. **Privilege level:** `authenticated` has only SELECT on `user_claims` (for the `db_pre_request` path). No INSERT or UPDATE is granted.
+
+2. **RLS level:** Even if a privilege were granted, RLS on `user_claims` has no INSERT or UPDATE policies for `authenticated`. A `WITH CHECK (true)` policy is not present.
+
+3. **Write mechanism:** The three trigger functions that write to `user_claims` (`_sync_member_metadata`, `_sync_member_permission`, `_on_role_definition_change`) are SECURITY DEFINER and run as `postgres`. They are the only write path. Trigger functions (`RETURNS trigger`) cannot be invoked directly via RPC or REST.
+
+The two-layer defense (privilege + RLS) means that even a misconfigured RLS policy cannot open the write path to `authenticated`, because the privilege is not granted.
+
+---
+
+## Storage RLS Freshness
+
+Supabase Storage routes requests through a separate code path that does not invoke the PostgREST `db_pre_request` hook. A naive implementation would leave Storage RLS policies using stale claims from the JWT.
+
+The extension addresses this in `get_claims()`:
+
+- If `request.groups` is set (PostgREST path), return it — this is the fresh value written by `db_pre_request`.
+- If `request.groups` is not set (Storage path), fall back to reading `user_claims` directly via `_get_user_groups()`.
+
+The fallback reads from the same `user_claims` table that `db_pre_request` reads from. Both paths reflect the same claims state, rebuilt by triggers whenever memberships change. Storage RLS policies using `has_role()`, `is_member()`, `has_permission()`, etc., always reflect the current membership state.
+
+---
+
+## Known Limitations and Documented Risks
+
+### Invite UUID as a Bearer Token
+
+Invite codes are UUIDs generated by `gen_random_uuid()`, which provides 122 bits of entropy. This is cryptographically strong enough to prevent brute-force guessing. However, invite codes should be treated as bearer tokens:
+
+- **Set a short `expires_at`:** An unexpired, unused invite is permanently valid. Set `expires_at` to the shortest acceptable window (e.g., 7 days for email invites, 15 minutes for one-click links).
+- **Single-use enforcement:** `accept_invite()` atomically marks the invite as used (`user_id IS NOT NULL`, `accepted_at IS NOT NULL`) and refuses to reuse it. There is no secondary share-link mechanism — each invite is consumed exactly once.
+- **Revocation:** Use `delete_invite()` to invalidate an outstanding invite before it is accepted.
+
+### `create_group()` Resource Exhaustion
+
+`create_group()` is a SECURITY DEFINER function callable by any authenticated user. There is no built-in rate limit or quota. A malicious or buggy client could create large numbers of groups. Mitigations:
+
+- Add an application-level rate limit (e.g., at the API gateway or in a PostgREST pre-request hook).
+- Add an RLS-equivalent BEFORE trigger on `rbac.groups` that counts existing groups per user and raises an exception above a threshold.
+- For internal tools, restrict `create_group()` EXECUTE to a specific role rather than all `authenticated` users.
+
+### Empty `members.roles` Is Intentional
+
+A `members` row may have `roles = '{}'` (an empty array). This represents a member with no roles — they are in the group (so `is_member()` returns true) but have no permissions from roles. This is a valid state used to represent group membership without role-based authority.
+
+This differs from `invites.roles`, which has a `CHECK (cardinality(roles) > 0)` constraint — invites must specify at least one role to be meaningful.
+
+### No Automated Upgrade from v4.x
+
+There is no automated upgrade path from v4.x to v5.0.0. The schema changes are too extensive. Migration requires data export, extension drop, reinstall, and re-import. See [docs/MIGRATION_GUIDE.md](MIGRATION_GUIDE.md).
+
+### Supabase Logical Backup Limitations
+
+Supabase logical backups may fail to restore correctly if `auth.users` is not available when the extension is being restored. This is an upstream Supabase platform issue (see GitHub Issue #41) with no workaround within this extension. Contact Supabase support if you encounter this.
+
+### Role Definitions Are Global
+
+All groups share the same role vocabulary. There is no way to define roles that exist only for one group. If your application needs different role names for different groups, the current system requires all of those role names to be registered globally in `rbac.roles`.
+
+Per-group custom roles are a planned future enhancement. The `permissions` table being a separate, canonical registry (rather than permissions being embedded only in `roles.permissions[]`) is designed to enable this without schema changes.
+
+### Permission Strings Are Opaque
+
+The extension does not interpret dot-notation or other structure in permission strings. `group_data.read` and `group_data.*` are two independent strings. There is no wildcard matching within permission strings. If you want a broad grant (e.g., all `group_data.*` permissions), you must list each permission explicitly in the role definition.
+
+### Prospective-Only Changes
+
+Tightening `grantable_roles` on a role definition does not retroactively revoke existing memberships or permission overrides. Only future grant operations are affected. This is documented above in [Privilege Escalation Prevention](#privilege-escalation-prevention) and is a documented design decision, not a bug. App authors must perform explicit cleanup via `service_role` if they need to revoke existing grants after tightening scope.
+
+### Self-Removal Risk
+
+An `owner` can remove themselves from the group using `remove_member()` (subject to RLS). If there are no other owners, the group becomes orphaned — no member has the authority to perform owner-level operations. The extension does not prevent this.
+
+Mitigation: add an RLS DELETE policy on `members` that prevents deleting the last owner, or add an `AFTER DELETE` trigger that checks for at least one remaining owner.
+
+### Audit Logging
+
+The extension does not provide built-in audit trails. If you need to track who added whom to a group, or who changed a member's roles, add triggers on `members` and `member_permissions`. The `_sync_member_metadata` trigger fires AFTER the write, so a custom BEFORE trigger could capture the pre-change state.

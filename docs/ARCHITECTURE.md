@@ -1,399 +1,439 @@
 # Architecture
 
-## Overview
+This document describes the internal structure of the Supabase Tenant RBAC extension — the tables, triggers, functions, and data flows that make the system work. Read [docs/CONCEPTUAL_MODEL.md](CONCEPTUAL_MODEL.md) first for the conceptual background.
 
-`supabase-tenant-rbac` provides multi-tenant role-based access control (RBAC) as a PostgreSQL TLE. It stores group memberships in a relational table, propagates them into an extension-owned `user_claims` cache via trigger, and makes them available to RLS policies via a PostgREST pre-request hook — ensuring claims are always fresh on every API request. An optional Supabase Auth Hook injects claims into JWTs at token creation time.
+## Table of Contents
 
-As of v5.0.0, all tables live in a **private schema** (recommended: `rbac`) that is not exposed to PostgREST. All interaction goes through typed RPC functions. Public wrappers are **opt-in** — run `examples/setup/create_public_wrappers.sql` after installation to expose functions in the `public` schema for PostgREST discovery.
+1. [Table Schemas](#table-schemas)
+2. [Trigger Flow](#trigger-flow)
+3. [_build_user_claims() — The Resolution Algorithm](#_build_user_claims--the-resolution-algorithm)
+4. [db_pre_request Hook](#db_pre_request-hook)
+5. [Auth Hook](#auth-hook)
+6. [Storage RLS Fallback](#storage-rls-fallback)
+7. [File Relationships Diagram](#file-relationships-diagram)
+8. [SECURITY DEFINER Functions](#security-definer-functions)
 
 ---
 
-## Data Model
+## Table Schemas
 
-### Tables (in `@extschema@`, e.g. `rbac`)
+All tables live in the `rbac` schema (the extension schema, `@extschema@`). None are exposed via PostgREST directly.
 
-#### `groups`
-Represents a tenant, organization, team, or any logical grouping.
+### `permissions`
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `uuid` | Primary key, auto-generated |
-| `name` | `text NOT NULL` | Group display name |
-| `metadata` | `jsonb` | Arbitrary group data (settings, etc.) Default: `{}` |
-| `created_at` | `timestamptz` | Auto-set on insert |
-| `updated_at` | `timestamptz` | Auto-updated via `_set_updated_at()` trigger |
+The canonical registry of all permission strings.
 
-#### `members`
-Maps users to groups. **One row per membership** with a `roles` array.
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `name` | `text` | PRIMARY KEY | The permission string, e.g. `data.read` |
+| `description` | `text` | | Human-readable description |
+| `created_at` | `timestamptz` | NOT NULL DEFAULT now() | |
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `uuid` | Primary key, auto-generated |
-| `group_id` | `uuid` | FK → `groups(id)` ON DELETE CASCADE |
-| `user_id` | `uuid` | FK → `auth.users(id)` ON DELETE CASCADE |
-| `roles` | `text[]` | Array of role strings. Default: `{}` |
-| `metadata` | `jsonb` | Arbitrary user-in-group data. Default: `{}` |
-| `created_at` | `timestamptz` | Auto-set on insert |
-| `updated_at` | `timestamptz` | Auto-updated via `_set_updated_at()` trigger |
+RLS: enabled, deny-all on install. App author must add policies or use `service_role`.
 
-**Unique constraint:** `(group_id, user_id)` — one row per user-group pair. Use `add_member()` with ON CONFLICT to merge roles.
+### `roles`
 
-#### `invites`
-An invite code allowing a user to join a group with pre-specified roles.
+Role definitions. The app author creates roles once; they apply to all groups.
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `uuid` | Primary key AND invite code, auto-generated |
-| `group_id` | `uuid` | FK → `groups(id)` ON DELETE CASCADE |
-| `roles` | `text[]` | Roles to assign when accepted. Must have >= 1 role. |
-| `invited_by` | `uuid` | FK → `auth.users(id)` ON DELETE CASCADE |
-| `created_at` | `timestamptz` | Auto-set on insert |
-| `user_id` | `uuid` | FK → `auth.users(id)` ON DELETE CASCADE. NULL until accepted. |
-| `accepted_at` | `timestamptz` | NULL until accepted. |
-| `expires_at` | `timestamptz` | Optional expiry. NULL = never expires. |
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `name` | `text` | PRIMARY KEY | The role name, e.g. `editor` |
+| `description` | `text` | | Human-readable description |
+| `permissions` | `text[]` | NOT NULL DEFAULT `'{}'` | Permission strings granted to holders of this role. Each must exist in `permissions` table |
+| `grantable_roles` | `text[]` | NOT NULL DEFAULT `'{}'` | Role names that holders of this role can assign. `'*'` wildcard means any role |
+| `created_at` | `timestamptz` | NOT NULL DEFAULT now() | |
+| `updated_at` | `timestamptz` | NOT NULL DEFAULT now() | Maintained by `_set_updated_at` trigger |
 
-#### `roles`
-Global role definitions. All management RPCs validate role assignments against this table. Roles can carry a `permissions[]` array that is resolved into the claims cache at write time.
+Pre-seeded: `owner` with `grantable_roles = ARRAY['*']`.
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `name` | `text` | Primary key. The role string. |
-| `description` | `text` | Optional human-readable description. |
-| `permissions` | `text[]` | Permissions granted by this role. Default: `{}` |
-| `created_at` | `timestamptz` | Auto-set on insert |
+RLS: enabled, deny-all on install. `authenticated` has no SELECT by default. App authors who want users to browse role definitions must explicitly grant SELECT and add an RLS policy.
 
-Pre-seeded with `'owner'` (default role for `create_group`).
+### `groups`
 
-#### `user_claims`
-Claims cache. One row per user, auto-managed by the `_sync_member_metadata` and `_sync_member_permission` triggers.
+Tenants or organizations.
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `user_id` | `uuid` | Primary key, FK → `auth.users(id)` ON DELETE CASCADE |
-| `claims` | `jsonb` | Nested group/role/permission map — see format below |
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `uuid` | PRIMARY KEY DEFAULT gen_random_uuid() | |
+| `name` | `text` | NOT NULL | Display name |
+| `metadata` | `jsonb` | NOT NULL DEFAULT `'{}'` | Arbitrary app-defined metadata |
+| `created_at` | `timestamptz` | NOT NULL DEFAULT now() | |
+| `updated_at` | `timestamptz` | NOT NULL DEFAULT now() | Maintained by `_set_updated_at` trigger |
 
-**Never write to this table directly.** It is updated automatically whenever `members`, `roles.permissions`, or `member_permissions` changes.
+RLS: enabled, deny-all on install.
 
-#### `member_permissions`
-Direct per-member permission overrides. One row per `(group_id, user_id, permission)` triple.
+### `members`
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `uuid` | Primary key, auto-generated |
-| `group_id` | `uuid` | FK → `groups(id)` ON DELETE CASCADE |
-| `user_id` | `uuid` | FK → `auth.users(id)` ON DELETE CASCADE |
-| `permission` | `text` | The permission string being granted directly |
-| `created_at` | `timestamptz` | Auto-set on insert |
+One row per user-group membership.
 
-**Unique constraint:** `(group_id, user_id, permission)` — prevents duplicate grants; enables idempotent `grant_member_permission()`.
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `uuid` | PRIMARY KEY DEFAULT gen_random_uuid() | |
+| `group_id` | `uuid` | NOT NULL REFERENCES groups(id) ON DELETE CASCADE | |
+| `user_id` | `uuid` | NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE | |
+| `roles` | `text[]` | NOT NULL DEFAULT `'{}'` | Assigned role names. Each must exist in `roles` table |
+| `metadata` | `jsonb` | NOT NULL DEFAULT `'{}'` | Arbitrary app-defined metadata |
+| `created_at` | `timestamptz` | NOT NULL DEFAULT now() | |
+| `updated_at` | `timestamptz` | NOT NULL DEFAULT now() | Maintained by `_set_updated_at` trigger |
 
-**FK to `members(group_id, user_id)` ON DELETE CASCADE** — deleting a member automatically removes all their direct permission overrides in that group.
+UNIQUE constraint: `(group_id, user_id)` — named `members_group_user_uq`. Required for the `member_permissions` FK reference.
 
-Permission overrides are merged into `user_claims.permissions[]` alongside role-derived permissions. The combined `permissions[]` is the flat, deduplicated, sorted union of both sources.
+RLS: enabled, deny-all on install.
 
-### Claims Storage Format
+### `member_permissions`
 
-`rbac.user_claims` stores a nested structure with separate `roles` and `permissions` arrays per group:
+Direct per-member permission overrides. Grants a specific permission to a specific member without assigning a role.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `uuid` | PRIMARY KEY DEFAULT gen_random_uuid() | |
+| `group_id` | `uuid` | NOT NULL | Part of FK to members |
+| `user_id` | `uuid` | NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE | |
+| `permission` | `text` | NOT NULL | Must exist in `permissions` table |
+| `created_at` | `timestamptz` | NOT NULL DEFAULT now() | |
+
+UNIQUE constraint: `(group_id, user_id, permission)` — makes grants idempotent (INSERT ... ON CONFLICT DO NOTHING).
+
+FK: `(group_id, user_id)` REFERENCES `members(group_id, user_id)` ON DELETE CASCADE — overrides are automatically deleted when the member is removed.
+
+RLS: enabled, deny-all on install.
+
+### `invites`
+
+Invite codes for group membership.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | `uuid` | PRIMARY KEY DEFAULT gen_random_uuid() | The invite code |
+| `group_id` | `uuid` | NOT NULL REFERENCES groups(id) ON DELETE CASCADE | |
+| `roles` | `text[]` | NOT NULL DEFAULT `'{}'` | Roles the invitee receives on acceptance |
+| `invited_by` | `uuid` | NOT NULL REFERENCES auth.users(id) | Set to `auth.uid()` at creation |
+| `user_id` | `uuid` | REFERENCES auth.users(id) | Populated on acceptance |
+| `accepted_at` | `timestamptz` | | Populated on acceptance |
+| `expires_at` | `timestamptz` | | NULL means never expires |
+| `created_at` | `timestamptz` | NOT NULL DEFAULT now() | |
+
+RLS: enabled, deny-all on install.
+
+### `user_claims`
+
+The claims cache. One row per user. Never written to directly — maintained exclusively by trigger functions.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `user_id` | `uuid` | PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE | |
+| `claims` | `jsonb` | NOT NULL DEFAULT `'{}'` | Keyed by group UUID. See format below |
+
+**Claims format:**
 
 ```json
 {
   "<group-uuid>": {
-    "roles": ["role1", "role2"],
-    "permissions": ["perm.a", "perm.b", "perm.c"]
-  },
-  "<other-group-uuid>": {
-    "roles": ["viewer"],
-    "permissions": ["data.read"]
+    "roles": ["editor"],
+    "permissions": ["data.read", "data.write"],
+    "grantable_roles": ["viewer"],
+    "grantable_permissions": ["data.read"]
   }
 }
 ```
 
-`roles` contains the raw role assignments from `members.roles[]`. `permissions` is the flat, deduplicated, alphabetically-sorted union of all permissions from `roles.permissions[]` for every role the user holds in that group, **plus** any direct overrides from `member_permissions` for that (group, user) pair. Both sources are resolved at write time by `_build_user_claims()` — zero runtime cost in RLS policies.
+RLS: enabled. `authenticated` has SELECT on own row only. `authenticator` has SELECT (for `db_pre_request`). `supabase_auth_admin` has SELECT (for auth hook). `service_role` has ALL. No INSERT or UPDATE for `authenticated` — writes are exclusively via DEFINER trigger functions.
 
-The `custom_access_token_hook` injects this structure into JWT `app_metadata.groups` at token creation:
+---
 
-```json
-{
-  "app_metadata": {
-    "groups": {
-      "<group-uuid>": {
-        "roles": ["role1"],
-        "permissions": ["perm.a"]
+## Trigger Flow
+
+Three triggers maintain the claims cache automatically.
+
+```
+members table
+    INSERT / UPDATE / DELETE
+        │
+        └── trigger: on_change_sync_member_metadata
+            (AFTER INSERT OR UPDATE OR DELETE, FOR EACH ROW)
+                │
+                └── calls: _sync_member_metadata() [SECURITY DEFINER]
+                        │
+                        └── calls: _build_user_claims(affected_user_id)
+                        └── UPSERT into rbac.user_claims
+
+member_permissions table
+    INSERT / DELETE
+        │
+        └── trigger: on_member_permission_change
+            (AFTER INSERT OR DELETE, FOR EACH ROW)
+                │
+                └── calls: _sync_member_permission() [SECURITY DEFINER]
+                        │
+                        └── calls: _build_user_claims(affected_user_id)
+                        └── UPSERT into rbac.user_claims
+
+roles table
+    UPDATE (WHEN permissions[] changed OR grantable_roles[] changed)
+        │
+        └── trigger: on_role_definition_change
+            (AFTER UPDATE, FOR EACH ROW,
+             WHEN OLD.permissions <> NEW.permissions
+               OR OLD.grantable_roles <> NEW.grantable_roles)
+                │
+                └── calls: _on_role_definition_change() [SECURITY DEFINER]
+                        │
+                        └── for each member holding the updated role:
+                            └── calls: _build_user_claims(member_user_id)
+                            └── UPSERT into rbac.user_claims
+```
+
+All three trigger functions are SECURITY DEFINER so they can write to `user_claims` without requiring INSERT/UPDATE grants for `authenticated`. The trigger functions (`RETURNS trigger`) cannot be called directly via RPC or REST — DEFINER on trigger functions does not expand the API surface.
+
+---
+
+## `_build_user_claims()` — The Resolution Algorithm
+
+`_build_user_claims(p_user_id uuid)` is the internal function that computes the full claims object for a user. It is called by all three trigger functions and is never called directly by application code.
+
+**Algorithm:**
+
+```
+1. Query all memberships for p_user_id from rbac.members.
+   For each membership (group_id, roles[]):
+
+   a. Resolve permissions:
+      - For each role name in members.roles[]:
+          collect roles.permissions[] from rbac.roles
+      - SELECT permission FROM rbac.member_permissions
+          WHERE group_id = <group_id> AND user_id = p_user_id
+      - UNION ALL of role permissions + direct overrides
+      - SELECT DISTINCT to deduplicate
+      → result: permissions[]
+
+   b. Resolve grantable_roles:
+      - For each role name in members.roles[]:
+          collect roles.grantable_roles[] from rbac.roles
+      - If any collected array contains '*', result is ['*']
+      - Otherwise, UNION ALL + DISTINCT
+      → result: grantable_roles[]
+
+   c. Resolve grantable_permissions:
+      - If grantable_roles = ['*']: result is ['*']
+      - Otherwise, for each role name in grantable_roles:
+          collect roles.permissions[] from rbac.roles
+      - UNION ALL + DISTINCT
+      → result: grantable_permissions[]
+
+   d. Build the group entry:
+      {
+        "roles": members.roles[],
+        "permissions": permissions[],
+        "grantable_roles": grantable_roles[],
+        "grantable_permissions": grantable_permissions[]
       }
-    }
-  }
-}
+
+2. Construct the full claims object:
+   {
+     "<group-uuid-1>": { ... },
+     "<group-uuid-2>": { ... }
+   }
+   (one entry per group the user is a member of)
+
+3. UPSERT into rbac.user_claims:
+   INSERT INTO rbac.user_claims (user_id, claims)
+   VALUES (p_user_id, <claims_object>)
+   ON CONFLICT (user_id) DO UPDATE SET claims = <claims_object>
+
+   If the user has no memberships, upserts with claims = '{}'.
+```
+
+**Why full rebuild instead of incremental update?**
+
+A full rebuild from source tables is simpler and safer than incremental updates. There is no risk of incremental update bugs, no need to track what changed, and the result is always consistent with the source tables. The write path (membership and role definition changes) is infrequent enough that the full rebuild cost is acceptable.
+
+---
+
+## `db_pre_request` Hook
+
+`db_pre_request()` is a SECURITY INVOKER function registered as the PostgREST `pgrst.db_pre_request` hook on the `authenticator` role.
+
+**When it runs:** Before every PostgREST API request. It does not run for Supabase Storage requests.
+
+**What it does:**
+
+```
+1. Read auth.uid() from the current JWT.
+2. If auth.role() = 'anon' or auth.uid() is NULL:
+     set_config('request.groups', '{}', true)
+     return
+3. SELECT claims FROM rbac.user_claims WHERE user_id = auth.uid()
+4. set_config('request.groups', claims::text, true)
+   (session-local: true — resets at transaction end)
+```
+
+**What it provides:**
+
+All RLS helper functions (`has_role`, `is_member`, `has_permission`, etc.) call `get_claims()` internally. `get_claims()` reads the `request.groups` session variable set by `db_pre_request`. This means:
+
+- The database read from `user_claims` happens once per request, not once per row in a query.
+- Role changes take effect on the next request — not on the next token refresh.
+- The session variable is transaction-local, so it cannot leak between requests.
+
+**Registration:**
+
+```sql
+ALTER ROLE authenticator SET pgrst.db_pre_request TO 'rbac.db_pre_request';
+NOTIFY pgrst, 'reload config';
+```
+
+This is done automatically at extension install time.
+
+---
+
+## Auth Hook
+
+`custom_access_token_hook(event jsonb)` is an optional Supabase Auth Hook that injects group claims into JWTs at token-creation time.
+
+**Purpose:** Provides convenient client-side access to claims without a database round-trip. The JWT's `app_metadata.groups` field contains the same structure as `user_claims.claims`.
+
+**How it works:**
+
+```
+1. Extract user_id from event.user_id.
+2. SELECT claims FROM rbac.user_claims WHERE user_id = <user_id>
+3. Merge claims into event.claims.app_metadata.groups
+4. Return the modified event
+```
+
+**Important:** The auth hook runs at token-creation time. Claims in the JWT may become stale if group memberships change before the token expires. `db_pre_request` provides the freshness guarantee — the auth hook is complementary, not a replacement.
+
+**Registration in config.toml:**
+
+```toml
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/rbac/custom_access_token_hook"
+```
+
+Or if using public wrappers:
+```toml
+uri = "pg-functions://postgres/public/custom_access_token_hook"
+```
+
+**Grants required:**
+
+```sql
+GRANT USAGE ON SCHEMA rbac TO supabase_auth_admin;
+GRANT SELECT ON rbac.user_claims TO supabase_auth_admin;
+GRANT EXECUTE ON FUNCTION rbac.custom_access_token_hook TO supabase_auth_admin;
+```
+
+These are set at install time.
+
+---
+
+## Storage RLS Fallback
+
+Supabase Storage routes requests through a separate code path that does not invoke the PostgREST `db_pre_request` hook. As a result, `request.groups` is not set for Storage requests.
+
+`get_claims()` handles this with a fallback:
+
+```sql
+-- Pseudocode for get_claims()
+DECLARE
+  v_groups text := current_setting('request.groups', true);
+BEGIN
+  -- PostgREST path: request.groups was set by db_pre_request
+  IF v_groups IS NOT NULL AND v_groups != '' THEN
+    RETURN v_groups::jsonb;
+  END IF;
+
+  -- Storage path: read user_claims directly
+  RETURN coalesce(
+    (SELECT claims FROM rbac.user_claims WHERE user_id = auth.uid()),
+    '{}'::jsonb
+  );
+END;
+```
+
+All RLS helper functions call `get_claims()`, so they work correctly in both PostgREST and Storage contexts without any changes to RLS policies.
+
+`_get_user_groups()` is the internal function that performs the direct `user_claims` read for the Storage fallback. It is SECURITY INVOKER and has EXECUTE granted to `authenticated` and `service_role`.
+
+---
+
+## File Relationships Diagram
+
+```
+members (INSERT/UPDATE/DELETE)
+    └── trigger: on_change_sync_member_metadata
+        └── calls: _sync_member_metadata()  [SECURITY DEFINER]
+            └── calls: _build_user_claims(user_id)
+                └── resolves permissions from roles.permissions[]
+                └── resolves grantable_roles from roles.grantable_roles[]
+                └── resolves grantable_permissions from grantable_roles
+                └── + direct overrides from member_permissions
+            └── upserts: rbac.user_claims
+
+member_permissions (INSERT/DELETE)
+    └── trigger: on_member_permission_change
+        └── calls: _sync_member_permission()  [SECURITY DEFINER]
+            └── calls: _build_user_claims(user_id)
+            └── upserts: rbac.user_claims
+
+roles (UPDATE permissions[] OR grantable_roles[])
+    └── trigger: on_role_definition_change
+        (WHEN OLD.permissions <> NEW.permissions
+          OR OLD.grantable_roles <> NEW.grantable_roles)
+        └── calls: _on_role_definition_change()  [SECURITY DEFINER]
+            └── for each user holding the role:
+                └── calls: _build_user_claims(user_id)
+                └── upserts: rbac.user_claims
+
+Every PostgREST API request:
+    └── db_pre_request()  [SECURITY INVOKER, registered on authenticator role]
+        └── reads: rbac.user_claims
+        └── writes: request.groups (session config)
+
+Token creation (Supabase Auth Hook):
+    └── custom_access_token_hook()  [SECURITY INVOKER, supabase_auth_admin]
+        └── reads: rbac.user_claims
+        └── injects: claims.app_metadata.groups into JWT
+
+RLS policies call:
+    └── has_role / has_any_role / has_all_roles
+    │   has_permission / has_any_permission / has_all_permissions
+    │   is_member
+        └── calls: get_claims()
+            └── reads: request.groups (PostgREST path, from db_pre_request)
+            └── fallback: _get_user_groups() [SECURITY INVOKER] (Storage path)
+                └── reads: rbac.user_claims directly
+
+Management RPCs (add_member, update_member_roles, create_invite,
+                 grant_member_permission, revoke_member_permission):
+    └── reads: request.groups (grantable_roles, grantable_permissions)
+    └── enforces escalation check before write
+    └── calls: _validate_roles() [SECURITY DEFINER] to check role names
+    └── calls: _validate_permissions() [SECURITY DEFINER] to check permission names
+    └── calls: _validate_grantable_roles() [SECURITY DEFINER] to check grantable scope
 ```
 
 ---
 
-## Claims Synchronization Flow
+## SECURITY DEFINER Functions
 
-```
-1a. Management RPC (add_member, create_group, etc.) modifies members table
-         │
-         ▼
-2a. AFTER trigger fires: on_change_sync_member_metadata
-         │
-         ▼
-3. _sync_member_metadata() [SECURITY INVOKER] runs
-   - Calls _build_user_claims(user_id)
-   - _build_user_claims() joins members with roles + member_permissions:
-     SELECT jsonb_object_agg(group_id::text,
-       jsonb_build_object('roles', roles, 'permissions',
-         deduplicated_union_of_role_permissions_and_direct_overrides))
-     FROM members WHERE user_id = p_user_id
-   - Upserts result into rbac.user_claims
+The extension minimizes SECURITY DEFINER surface. Only 8 functions have this property, each with a documented justification.
 
-1b. Permission management RPC (set_role_permissions, grant_permission, etc.)
-    modifies roles.permissions[]
-         │
-         ▼
-2b. AFTER trigger fires: on_role_permissions_change
-    (WHEN OLD.permissions IS DISTINCT FROM NEW.permissions)
-         │
-         ▼
-3b. _on_role_permissions_change() [SECURITY INVOKER] runs
-    - Finds all users holding the changed role (SELECT DISTINCT user_id FROM members)
-    - Calls _build_user_claims() and upserts user_claims for each affected user
+| Function | Type | Why DEFINER | What it does | What it does NOT do |
+|----------|------|-------------|-------------|---------------------|
+| `create_group()` | Management RPC | Caller has no prior membership to satisfy RLS on `groups` or `members` at creation time | Creates the group row, inserts caller as member with specified roles | Does not bypass RLS on any subsequent operation |
+| `accept_invite()` | Management RPC | Caller has no prior membership in the target group | Validates invite, marks it used, upserts caller as member | Does not bypass membership validation or expiry check |
+| `_sync_member_metadata()` | Trigger function | Must write to `user_claims` without requiring INSERT/UPDATE grants for `authenticated` | Calls `_build_user_claims()`, upserts to `user_claims` | Cannot be called directly via RPC or REST (trigger-only) |
+| `_sync_member_permission()` | Trigger function | Must write to `user_claims` without requiring INSERT/UPDATE grants for `authenticated` | Calls `_build_user_claims()`, upserts to `user_claims` | Cannot be called directly via RPC or REST (trigger-only) |
+| `_on_role_definition_change()` | Trigger function | Must write to `user_claims` for all affected users without requiring broad grants | Iterates affected members, calls `_build_user_claims()` per user | Cannot be called directly via RPC or REST (trigger-only) |
+| `_validate_roles()` | Internal helper | INVOKER RPCs need to validate role names against `rbac.roles`, but `authenticated` has no SELECT on that table | Reads `roles.name`, raises if any name is unrecognized | No writes; no user-controllable output beyond the exception message |
+| `_validate_permissions()` | Internal helper | INVOKER RPCs need to validate permission names against `rbac.permissions`, but `authenticated` has no SELECT on that table | Reads `permissions.name`, raises if any name is unrecognized | No writes; no user-controllable output beyond the exception message |
+| `_validate_grantable_roles()` | Internal helper | INVOKER RPCs need to check caller's grantable scope against `user_claims`, then validate target roles | Reads caller's `grantable_roles` from claims cache, validates target roles are within scope | No writes; cannot modify grant scope |
 
-1c. grant_member_permission() / revoke_member_permission() modifies member_permissions
-         │
-         ▼
-2c. AFTER trigger fires: on_member_permission_change
-         │
-         ▼
-3c. _sync_member_permission() [SECURITY INVOKER] runs
-    - Calls _build_user_claims(user_id)
-    - Upserts result into rbac.user_claims
-         │
-         ▼
-4. rbac.user_claims now reflects current memberships and permissions
-         │
-         ├─► On every PostgREST API request, BEFORE the query runs:
-         │   db_pre_request() [SECURITY INVOKER] executes
-         │   - Reads claims from rbac.user_claims for auth.uid()
-         │   - Stores it in session config: request.groups
-         │
-         └─► On JWT creation (Supabase Auth Hook):
-             custom_access_token_hook() [SECURITY INVOKER] executes
-             - Reads claims from rbac.user_claims for event.user_id
-             - Injects groups into JWT app_metadata.groups
-         │
-         ▼
-5. RLS policies evaluate using has_role() / is_member() / has_any_role() / has_all_roles()
-   - These call get_claims()
-   - get_claims() reads request.groups (fresh, from step 4 PostgREST path)
-   - Falls back to _get_user_groups() if request.groups is unset (Storage path)
-   - _get_user_groups() reads rbac.user_claims directly [SECURITY INVOKER]
-```
+All other internal helper functions (`_build_user_claims`, `_get_user_groups`, `_jwt_is_expired`, `_set_updated_at`) are SECURITY INVOKER.
 
-**Key insight:** Step 4 (db_pre_request) happens on *every* API request, so role changes take effect immediately — no waiting for JWT expiry or re-login.
-
-**Storage path:** When `db_pre_request` does not run (Supabase Storage), `request.groups` is unset and `get_claims()` falls back to `_get_user_groups()`, which reads `rbac.user_claims` directly. Storage RLS policies therefore also always see fresh data.
-
-**Auth Hook path:** `custom_access_token_hook` embeds claims in the JWT at token creation. Clients can read `app_metadata.groups` from the decoded JWT without a DB query, useful for client-side authorization decisions. Note: JWT claims reflect membership at the time of token issuance, not necessarily current membership. The db_pre_request path always reflects current membership.
-
----
-
-## Schema Architecture
-
-### Private Schema + Public Wrappers
-
-```
-@extschema@ (e.g. rbac) — NOT in PostgREST exposed schemas
-├── Tables: groups, members, invites, roles (with permissions[]),
-│           user_claims, member_permissions
-├── Internal: db_pre_request [INVOKER], _get_user_groups [INVOKER],
-│             _build_user_claims [STABLE], _sync_member_metadata [INVOKER],
-│             _sync_member_permission [INVOKER],
-│             _on_role_permissions_change [INVOKER], _set_updated_at,
-│             _jwt_is_expired, _validate_roles
-├── Auth Hook: custom_access_token_hook [INVOKER]
-├── RLS helpers: get_claims, has_role, is_member, has_any_role, has_all_roles,
-│               has_permission, has_any_permission, has_all_permissions
-├── Member mgmt: create_group [DEFINER], delete_group [INVOKER],
-│                add_member [INVOKER], remove_member [INVOKER],
-│                update_member_roles [INVOKER], list_members [INVOKER],
-│                accept_invite [DEFINER]
-├── Override mgmt: grant_member_permission [INVOKER],
-│                  revoke_member_permission [INVOKER],
-│                  list_member_permissions [INVOKER]
-├── Role mgmt:   create_role [service_role], delete_role [service_role],
-│                list_roles [service_role]
-└── Perm mgmt:   set_role_permissions [service_role], grant_permission [service_role],
-                 revoke_permission [service_role], list_role_permissions [service_role]
-
-public (opt-in wrappers — run examples/setup/create_public_wrappers.sql after install)
-├── RLS helpers + member management RPCs + custom_access_token_hook
-└── Thin pass-throughs to @extschema@.*
-    NOTE: Permission management RPCs are NOT wrapped — service_role only.
-```
-
-**Why private schema?** Tables are NOT REST-accessible (schema not in PostgREST's `db_schemas`). All interaction goes through RPC functions, reducing the attack surface.
-
-**Why opt-in public wrappers?** PostgREST discovers RPC functions in its exposed schemas (typically `public`). The wrappers enable `supabase.rpc('has_role', ...)` without extra configuration. They also allow unqualified function names in RLS policies: `USING (has_role(group_id, 'admin'))`. Wrappers are opt-in (not auto-created) so the default install has zero public surface area.
-
-### Security Model for INVOKER RPCs
-
-SECURITY INVOKER RPCs respect RLS on the `rbac.*` tables. The `authenticated` role has DML grants on all rbac tables, but RLS (deny-all, zero policies on install) controls row access. Consumers add RLS policies to define their authorization rules.
-
-SECURITY DEFINER is reserved for bootstrap operations only:
-- `create_group` — no prior membership exists for the caller to satisfy RLS
-- `accept_invite` — user doesn't have group membership yet
-
----
-
-## Functions
-
-### Internal Functions
-
-#### `db_pre_request()` → void
-**SECURITY INVOKER** | Called automatically by PostgREST before each request.
-Reads the current user's `claims` from `rbac.user_claims` and stores it in the `request.groups` session config variable. Runs as the `authenticator` role.
-
-#### `_get_user_groups()` → jsonb
-**SECURITY INVOKER** | Fallback in `get_claims()` for the Storage path.
-Reads `claims` from `rbac.user_claims` for `auth.uid()`. Returns `'{}'` for unauthenticated/groupless users.
-
-#### `_build_user_claims(p_user_id uuid)` → jsonb
-**STABLE SQL** | Internal helper used by both sync triggers.
-Builds the full claims object for a user by joining `members` with `roles`. Resolves and deduplicates permissions across all roles the user holds in each group. Returns `{}` if the user has no memberships.
-
-#### `_sync_member_metadata()` → trigger
-**SECURITY INVOKER** | AFTER INSERT OR DELETE OR UPDATE on `members`.
-Calls `_build_user_claims()` and upserts the result into `rbac.user_claims`. Enforces immutability of `user_id`/`group_id` on UPDATE.
-
-#### `_on_role_permissions_change()` → trigger
-**SECURITY INVOKER** | AFTER UPDATE on `roles` (only when `permissions` actually changes).
-Finds all users holding the changed role and rebuilds their claims via `_build_user_claims()`. Admin operation — cost is proportional to the number of users assigned the role.
-
-#### `custom_access_token_hook(event jsonb)` → jsonb
-**SECURITY INVOKER** | Supabase Auth Hook called at JWT creation time.
-Reads `claims` from `rbac.user_claims` for `event.user_id` and injects them into `event.claims.app_metadata.groups`. Runs as `supabase_auth_admin`. Register in `config.toml`.
-
-#### `_set_updated_at()` → trigger
-Sets `NEW.updated_at = now()`. Replaces the `moddatetime` dependency.
-
-#### `_jwt_is_expired()` → boolean
-Returns `true` if the JWT `exp` claim is in the past or missing.
-
-#### `_validate_roles(p_roles text[])` → void
-Checks that every role in the array exists in the `roles` table. Raises a descriptive error listing undefined roles.
-
-### RLS Helper Functions
-
-| Function | Returns | Description |
-|----------|---------|-------------|
-| `get_claims()` | `jsonb` | Returns current user's full claims (nested roles + permissions) |
-| `has_role(group_id, role)` | `boolean` | User has specific role in group |
-| `is_member(group_id)` | `boolean` | User is a member of group (any role) |
-| `has_any_role(group_id, roles[])` | `boolean` | User has any of the listed roles |
-| `has_all_roles(group_id, roles[])` | `boolean` | User has all of the listed roles |
-| `has_permission(group_id, permission)` | `boolean` | User has a specific resolved permission in group |
-| `has_any_permission(group_id, permissions[])` | `boolean` | User has any of the listed permissions |
-| `has_all_permissions(group_id, permissions[])` | `boolean` | User has all of the listed permissions |
-
-Permissions are resolved from `roles.permissions[]` at write time (claims cache). Using `has_permission()` in RLS is as fast as `has_role()` — both are single JSONB key lookups against the cached claims.
-
-**Auth tier logic** (applies to all helpers except `get_claims`):
-- `authenticated`: validates JWT not expired, checks claims
-- `anon`: always `false`
-- `session_user = 'postgres'` or `service_role`: always `true`
-- anything else: always `false`
-
-### Management RPCs
-
-| Function | Security | Description |
-|----------|----------|-------------|
-| `create_group(name, metadata, creator_roles)` → `uuid` | DEFINER | Create group + add caller as member. Default roles: `ARRAY['owner']` |
-| `delete_group(p_group_id)` | INVOKER | Delete a group (RLS enforced) |
-| `add_member(p_group_id, p_user_id, p_roles)` → `uuid` | INVOKER | Add member or merge roles on conflict |
-| `remove_member(p_group_id, p_user_id)` | INVOKER | Remove a member (RLS enforced) |
-| `update_member_roles(p_group_id, p_user_id, p_roles)` | INVOKER | Replace roles array (RLS enforced) |
-| `list_members(p_group_id)` → `TABLE(...)` | INVOKER | List group members (RLS enforced) |
-| `accept_invite(p_invite_id)` → `void` | DEFINER | Accept invite, upsert membership with role merge |
-| `create_role(p_name, p_description)` → `void` | service_role only | Add a role definition |
-| `delete_role(p_name)` → `void` | service_role only | Delete a role (blocked if in use) |
-| `list_roles()` → `TABLE(name, description, permissions[], created_at)` | service_role only | List all role definitions |
-| `set_role_permissions(p_role_name, p_permissions[])` → `void` | service_role only | Replace all permissions for a role |
-| `grant_permission(p_role_name, p_permission)` → `void` | service_role only | Add one permission to a role (idempotent) |
-| `revoke_permission(p_role_name, p_permission)` → `void` | service_role only | Remove one permission from a role |
-| `list_role_permissions(p_role_name DEFAULT NULL)` → `TABLE(role_name, permission)` | service_role only | List permissions per role |
-| `grant_member_permission(p_group_id, p_user_id, p_permission)` → `void` | INVOKER | Grant a direct permission override to a member (idempotent) |
-| `revoke_member_permission(p_group_id, p_user_id, p_permission)` → `void` | INVOKER | Remove a direct permission override (raises if not found) |
-| `list_member_permissions(p_group_id, p_user_id DEFAULT NULL)` → `TABLE(user_id, permission, created_at)` | INVOKER | List direct overrides in a group (all members or one) |
-
----
-
-## Role Model Strategies
-
-The extension validates roles against the `roles` table, but the naming convention is up to you.
-
-### Role-Centric with Permissions
-```
-owner  → permissions: ['group.delete', 'group.update', 'member.add', ...]
-admin  → permissions: ['member.add', 'member.remove', 'data.create', ...]
-viewer → permissions: ['data.read']
-```
-RLS by role: `has_role(group_id, 'admin')`
-RLS by permission: `has_permission(group_id, 'data.read')`
-
-### Permission-Centric Roles (flat)
-Name roles as permission strings and give each role a single matching permission:
-```
-group_data.read → permissions: ['group_data.read']
-group_user.invite → permissions: ['group_user.invite']
-```
-RLS: `has_permission(group_id, 'group_data.read')`
-
-**Hybrid:** Use coarse roles (owner/admin/viewer) for simple checks and fine-grained permissions for specific operations. `has_role()` for catch-alls, `has_permission()` for specific capabilities.
-
----
-
-## Invite System Flow
-
-```
-1. An owner/admin creates an invite via direct INSERT (per RLS):
-   INSERT INTO rbac.invites (group_id, roles, invited_by)
-   VALUES ('<group-uuid>', ARRAY['viewer'], auth.uid());
-   → id (invite code) is auto-generated
-
-2. Inviter shares the invite code (UUID) with the target user
-
-3. Target user calls the edge function or RPC directly:
-   POST /functions/v1/invite?invite_code=<uuid>
-   Authorization: Bearer <user-jwt>
-
-4. accept_invite() [SECURITY DEFINER] runs:
-   a. Locks invite row (SELECT FOR UPDATE)
-   b. Validates: not accepted, not expired
-   c. Marks invite as accepted (sets user_id and accepted_at)
-   d. Upserts into members (merges roles on conflict)
-   e. _sync_member_metadata trigger fires → updates auth.users
-
-5. User now has group membership; next API request sees fresh claims
-```
-
----
-
-## Extension Packaging
-
-The extension follows standard PostgreSQL TLE conventions:
-- **Control file** (`supabase_rbac.control`): declares version, `superuser = true`
-- **Full install scripts**: `supabase_rbac--X.Y.Z.sql` for fresh installs
-- **Upgrade scripts**: `supabase_rbac--A--B.sql` for in-place upgrades
-- Distributed on [database.dev](https://database.dev/pointsource/supabase_rbac)
-
-### Migration Generator
-
-`tools/generate_migration.sh` reads the version from the control file, wraps the extension SQL in `pgtle.install_extension()` boilerplate, and generates `CREATE SCHEMA IF NOT EXISTS rbac` + `CREATE EXTENSION ... SCHEMA rbac`.
-
----
-
-## Local Dev Architecture
-
-- **Migrations** run in order on `supabase start` or `supabase db reset`
-- **Seed** (`seed.sql`) creates test users, groups, members, and role definitions
-- The extension is installed via `pgtle.install_extension()` followed by `CREATE EXTENSION ... SCHEMA rbac`
-- Local PostgreSQL runs at port `54322`, API at `54321`, Studio at `54323`
+All `_`-prefixed functions have `REVOKE EXECUTE FROM PUBLIC`. Selective re-grants:
+- `_get_user_groups`: re-granted to `authenticated, service_role` (called by `get_claims()` Storage fallback)
+- `_jwt_is_expired`: re-granted to `authenticated, anon, service_role` (called by all RLS helpers)
+- `_build_user_claims`, `_validate_roles`, `_validate_permissions`, `_validate_grantable_roles`, `_set_updated_at`: no re-grant (DEFINER callers or trigger mechanism only)

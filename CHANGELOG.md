@@ -1,278 +1,45 @@
 # Changelog
 
-## 5.2.1
-
-### Security Hardening
-
-- **Internal helper functions locked down (F1, MEDIUM)** — Added `REVOKE EXECUTE FROM PUBLIC` on all five `_`-prefixed internal functions (`_build_user_claims`, `_get_user_groups`, `_validate_roles`, `_jwt_is_expired`, `_set_updated_at`). Previously any database role (including `authenticated` and `anon`) could call these directly. Selective re-grants:
-  - `_get_user_groups`: re-granted to `authenticated, service_role` (called by `get_claims()` Storage fallback)
-  - `_jwt_is_expired`: re-granted to `authenticated, anon, service_role` (called by all RLS helpers)
-  - `_build_user_claims`, `_validate_roles`, `_set_updated_at`: no re-grant (DEFINER callers only or trigger mechanism only)
-
-- **`rbac.roles` hidden from authenticated (F6, MEDIUM)** — Removed `GRANT SELECT ON rbac.roles TO authenticated`. The role/permission vocabulary is now inaccessible to end users by default. App-authors who want users to browse role definitions must explicitly `GRANT SELECT ON rbac.roles TO authenticated` and add an RLS policy. This prevents information disclosure (roles, descriptions, and permissions[] arrays) to arbitrary authenticated users.
-
-- **`_validate_roles()` made SECURITY DEFINER** — Required so INVOKER management RPCs (`add_member`, `update_member_roles`, `create_invite`) can validate role names against `rbac.roles` even though `authenticated` no longer has SELECT on that table. Pure internal validator: reads only `roles.name`, no writes, no user-controllable output beyond the exception message the caller already knows. This is the 6th DEFINER function in the extension.
-
-### Example File Fixes
-
-- **`create_public_wrappers.sql` (F2)** — Removed `SECURITY DEFINER` from `public.create_group` and `public.accept_invite` wrappers. They delegate to the already-DEFINER `rbac.*` originals via schema-qualified calls, so `SECURITY INVOKER` is sufficient and reduces privilege surface in the public schema.
-
-- **`custom_table_isolation.sql` (F3)** — Option B ("Permission-centric policies") now correctly uses `has_permission()` instead of `has_role()`. Using `has_role('project.read')` checks role names, not resolved permission strings — which would require users to define a role named `project.read` rather than a permission.
-
-- **`remove_public_wrappers.sql` (F4)** — Removed stale `DROP FUNCTION` entries for `public.create_role`, `public.delete_role`, `public.list_roles` which were never created by `create_public_wrappers.sql`. Fixed header comment (wrappers are opt-in since v5.0.0, not auto-created).
-
-- **`hardened_setup.sql` (F5)** — Added `rbac.member_permissions` and `rbac.user_claims` to the revoke/re-grant pattern. Updated `rbac.roles` section to reflect that `authenticated` no longer has SELECT by default in v5.2.1+.
-
-- **`quickstart.sql`** — Removed the `"Authenticated users can read roles"` SELECT policy. Added opt-in instructions as a comment.
-
-### New Tests
-
-- `24_cross_tenant_isolation.test.sql` — 9 assertions: privilege check (authenticated lacks SELECT on rbac.roles), cross-group row isolation for groups/members/invites/member_permissions, user_claims row isolation, zero-membership user isolation, viewer self-promotion blocked via RLS.
-- `25_anon_blocked.test.sql` — 8 assertions: anon lacks SELECT on all 6 rbac tables, anon lacks EXECUTE on create_group and add_member.
-- `26_negative_execute_grants.test.sql` — 14 assertions: anon lacks EXECUTE on 5 management RPCs; authenticated lacks EXECUTE on 4 service_role-only RPCs; anon/authenticated lack EXECUTE on `_build_user_claims`, `_validate_roles`; anon lacks EXECUTE on `_get_user_groups`.
-
-### Upgrade Path
-
-Apply `supabase_rbac--5.2.0--5.2.1.sql` to an existing v5.2.0 deployment. After upgrading:
-1. Drop the now-incorrect RLS policy if present: `DROP POLICY IF EXISTS "Authenticated can read roles" ON rbac.roles;`
-2. Verify `SELECT * FROM rbac.roles` is denied when running as an authenticated user.
-3. Verify management RPCs (`add_member`, `create_invite`) still validate roles correctly.
-
-## 5.2.0
-
-### Security Hardening
-
-- **Claims forgery fix (P0)** — The three trigger functions that write to `rbac.user_claims` (`_sync_member_metadata`, `_sync_member_permission`, `_on_role_permissions_change`) are now `SECURITY DEFINER`. They run as the function owner (`postgres`) regardless of the invoking role. The `authenticated` role's table grant on `user_claims` is reduced to SELECT-only. Previously, `authenticated` had INSERT/UPDATE on `user_claims` with `WITH CHECK (true)` RLS policies — allowing any authenticated user to forge claims for any `user_id`. Trigger functions (`RETURNS trigger`) cannot be called directly via RPC or REST; SECURITY DEFINER on trigger functions does not expand the API surface.
-  - `examples/policies/quickstart.sql` — removed "authenticated can insert/update claims" policies; updated header comment explaining the DEFINER-trigger model.
-  - `supabase/migrations/20240512101038_add_rls_policies.sql` — same removals.
-- **Consistent REVOKE/GRANT on all RLS helpers (P3)** — `get_claims`, `has_role`, `is_member`, `has_any_role`, and `has_all_roles` now have explicit `REVOKE FROM PUBLIC` / `GRANT TO authenticated, anon, service_role`, matching the existing pattern on `has_permission`, `has_any_permission`, `has_all_permissions`.
-
-### New Features
-
-- **`create_invite()` RPC (P1)** — `create_invite(p_group_id uuid, p_roles text[], p_expires_at timestamptz DEFAULT NULL) RETURNS uuid`. SECURITY INVOKER; INSERT is subject to the app-author's RLS policy on `invites`. Validates roles via `_validate_roles()`. Sets `invited_by = auth.uid()`.
-- **`delete_invite()` RPC (P1)** — `delete_invite(p_invite_id uuid) RETURNS void`. SECURITY INVOKER; DELETE is subject to the app-author's RLS policy on `invites`. Raises if the invite is not found or not authorized.
-- Both new RPCs have REVOKE/GRANT to `authenticated`. Public wrappers added to `examples/setup/create_public_wrappers.sql` and `remove_public_wrappers.sql`.
-- **Invites table GRANT fix (P1)** — `GRANT SELECT, UPDATE ON invites TO authenticated` is updated to `GRANT SELECT, INSERT, UPDATE, DELETE ON invites TO authenticated`. The missing INSERT/DELETE blocked the new RPCs.
-- **`revoke_member_permission()` empty-string validation (P4)** — Rejects blank or whitespace-only `p_permission` values with `invalid_parameter_value`, matching the existing validation in `grant_member_permission()`.
-
-### Breaking Changes / Behavior Changes
-
-- **ORBAC seed data (P2)** — `supabase/seed.sql` now uses hierarchical roles (`owner`, `admin`, `editor`, `viewer`) instead of 12 fine-grained single-permission roles. The pre-seeded `owner` role is updated with a full permissions array. Member assignments simplified to `ARRAY['owner']` (was 12-element arrays) and `ARRAY['viewer']` (was `ARRAY['group_data.read']`). This is a seed-data-only change — no extension schema change.
-- **`has_role` → `has_permission` in starter policies (P2)** — The local dev migration (`20240512101038_add_rls_policies.sql`) and the sensitive_data dummy data migration (`20240502214829_add_dummy_data.sql`) now use `has_permission()` (not `has_role()`) for permission-string checks. This aligns with the ORBAC model where `has_role` checks role names and `has_permission` checks resolved permission strings.
-- **Groups INSERT policy removed from starter policies (P2)** — The `"Authenticated can create"` INSERT policy on `rbac.groups` is removed. Group creation should go through `create_group()` (SECURITY DEFINER RPC), not direct INSERT.
-
-### Cleanup
-
-- **Delete outdated example files (P5)** — `examples/policies/permission_centric.sql` and `examples/policies/role_centric.sql` removed. Both were 4.x-era examples that predate the ORBAC permission model. `examples/policies/quickstart.sql` covers the same ground with current patterns.
-- **Remove `anon` from public wrapper RLS helper grants (P6)** — `examples/setup/create_public_wrappers.sql` no longer grants `anon` EXECUTE on the 8 RLS helper wrappers. These functions always return `false` for `anon` callers (handled internally) — the grant was unnecessary attack surface.
-
-### Documentation
-
-- `docs/SECURITY.md` — added "Claims Cache Write Protection" section explaining the DEFINER trigger model and migration steps for existing deployments; added "PostgREST Schema Exposure" warning; updated DEFINER function inventory (now 5 functions).
-
-### New Tests
-
-- `22_claims_write_guard.test.sql` — verifies that direct INSERT and UPDATE on `rbac.user_claims` are blocked for `authenticated` at both the privilege and RLS levels (4 assertions).
-- `23_invite_rpcs.test.sql` — tests `create_invite()` and `delete_invite()` RPCs: EXECUTE grants, creation, validation, deletion, and RLS enforcement (8 assertions).
-- `12_access_control.test.sql` — 5 new assertions for EXECUTE grants on `get_claims`, `has_role`, `is_member`, `has_any_role`, `has_all_roles` (17 total, was 12).
-
-## 5.1.0
-
-### New Features
-
-- **Direct member permission overrides** — grant individual permissions to a member without assigning a new role. Useful when a member needs a single capability (e.g., `data.export`) that doesn't warrant a full role assignment.
-  - New `member_permissions` table: stores `(group_id, user_id, permission)` triples. UNIQUE constraint on all three columns makes grants idempotent. RLS enabled, deny-all on install.
-  - Overrides merge additively into the `permissions[]` array in `user_claims` — same format, same helpers (`has_permission`, `has_any_permission`, `has_all_permissions`), zero read-side changes.
-  - `_build_user_claims()` extended with a UNION ALL branch for `member_permissions`. Backwards compatible: if the table is empty, output is identical to v5.0.0.
-  - New trigger `on_member_permission_change` (AFTER INSERT OR DELETE on `member_permissions`): calls `_build_user_claims()` and upserts `user_claims`, keeping the cache always in sync.
-  - Cascade behavior: deleting a member (or the group, or the auth user) automatically deletes their `member_permissions` rows via FK ON DELETE CASCADE.
-- **`members(group_id, user_id)` promoted to a named constraint** — `members_group_user_uq` (reuses existing unique index; no rebuild required). Required for the `member_permissions` FK reference and lays groundwork for Phase 2 (group-level roles).
-- **New management RPCs** (SECURITY INVOKER, GRANT to `authenticated`):
-  - `grant_member_permission(group_id, user_id, permission)` → void — idempotent (ON CONFLICT DO NOTHING).
-  - `revoke_member_permission(group_id, user_id, permission)` → void — raises if not found.
-  - `list_member_permissions(group_id, user_id DEFAULT NULL)` → table — returns all direct overrides for a group (or a specific member).
-- **Quickstart policy update** — `examples/policies/quickstart.sql` includes starter policies for `member_permissions` using `has_permission(group_id, 'group.manage_access')`. Permission name is a convention, not hard-coded.
-- **Public wrappers update** — `examples/setup/create_public_wrappers.sql` wraps the 3 new RPCs; `remove_public_wrappers.sql` drops them.
-- **Seed data update** — `supabase/seed.sql` adds the `group.manage_access` role, assigns it to admin members in RED/BLUE groups, and includes an example `member_permissions` row.
-
-### New Tests
-
-- `19_member_permissions.test.sql` — CRUD + cascade behavior (7 assertions)
-- `20_permission_claims_merge.test.sql` — direct overrides in claims, role merge, deduplication, `has_permission()`, revoke (8 assertions)
-- `21_permission_security.test.sql` — EXECUTE grants, claims verification, RLS block test (6 assertions)
-
 ## 5.0.0
 
-**Breaking release** — no upgrade path from v4.x. See the migration notes below.
+### Breaking Changes from v4.x
 
-### Breaking Changes
-
-- **Private schema**: Tables now live in `@extschema@` (recommended: `rbac`), which should NOT be in PostgREST's `db_schemas`. All interaction goes through RPC functions.
-- **`group_users` → `members`**: One row per membership with a `roles text[]` array. The multi-row-per-role model is removed.
-- **`group_invites` → `invites`**: Renamed for brevity; columns unchanged.
-- **`groups.name`**: New required `text NOT NULL` column. Group name was previously stored in `metadata->>'name'`.
-- **Function renames**: `user_has_group_role` → `has_role`, `user_is_group_member` → `is_member`, `user_has_any_group_role` → `has_any_role`, `user_has_all_group_roles` → `has_all_roles`, `get_user_claims` → `get_claims`, `jwt_is_expired` → `_jwt_is_expired` (internal), `accept_group_invite` → `accept_invite`.
-- **`moddatetime` removed**: Replaced by an inline `_set_updated_at()` trigger. No external dependency required.
-- **Management RPCs**: New functions `create_group()`, `delete_group()`, `add_member()`, `remove_member()`, `update_member_roles()`, `list_members()` replace direct table access. `create_group()` auto-adds the caller as a member with specified roles (default `ARRAY['owner']`).
+There is no automated upgrade from v4.x to v5.0.0. See `docs/MIGRATION_GUIDE.md`.
 
 ### New Features
 
-- **Global `roles` table**: Define valid role strings in `@extschema@.roles`. All management RPCs validate role assignments against this table. Pre-seeded with `'owner'`.
-- **Role management RPCs**: `create_role()`, `delete_role()`, `list_roles()` for managing role definitions. `delete_role()` refuses to delete a role that is in use by any member. These are **service_role only** (app-author operations).
-- **`_validate_roles()`**: Internal helper that checks role arrays against the `roles` table. Raises a descriptive error listing undefined roles.
-- **Opt-in public wrapper functions**: Public schema wrappers are no longer auto-created. Run `examples/setup/create_public_wrappers.sql` after installation to expose functions for PostgREST RPC discovery or unqualified RLS policy calls. Default install has zero public surface.
-- **`_sync_member_metadata()`**: Simplified trigger that rebuilds the entire user's claims on any `members` change (INSERT/UPDATE/DELETE). Replaces the incremental `update_user_roles()` approach.
-- **Permission layer (ORBAC)**: Roles now carry a `permissions text[]` column. Permissions are resolved into the claims cache at write time — zero runtime cost in RLS policies.
-  - New claims format: `{"<group-uuid>": {"roles": ["r1"], "permissions": ["p1", "p2"]}}` — separate namespaces prevent role/permission name collisions.
-  - New RLS helpers: `has_permission(group_id, permission)`, `has_any_permission(group_id, permissions[])`, `has_all_permissions(group_id, permissions[])`.
-  - New permission management RPCs (service_role only): `set_role_permissions()`, `grant_permission()`, `revoke_permission()`, `list_role_permissions()`.
-  - New `_build_user_claims(user_id)` internal helper: joins `members` + `roles` to build the full claims object with deduplicated, sorted permissions. Called by both sync triggers.
-  - New `_on_role_permissions_change()` trigger: fires after `roles.permissions` changes and rebuilds claims for all affected users.
+- **`permissions` table** — Canonical registry of all permission strings. All role permissions and member permission overrides are validated against this table at write time. Managed exclusively via `service_role` RPCs.
 
-### Migration from v4.x
+- **`grantable_roles` on roles** — Each role definition now declares which other roles its holders can assign (`grantable_roles text[]`). The pre-seeded `owner` role has `grantable_roles = ['*']` (can grant any role). Used to prevent privilege escalation.
 
-There is no automated upgrade path. To migrate:
+- **Expanded claims cache** — `user_claims.claims` now stores four fields per group: `roles`, `permissions`, `grantable_roles`, `grantable_permissions`. All four are resolved at write time by `_build_user_claims()`.
 
-1. Export your group/membership data from `groups`, `group_users`, and `group_invites`
-2. `DROP EXTENSION "pointsource-supabase_rbac"`
-3. Install v5.0.0 with `CREATE EXTENSION "pointsource-supabase_rbac" SCHEMA rbac`
-4. Re-import data into `rbac.groups` (add `name` column), `rbac.members` (collapse roles into arrays), `rbac.invites`
-5. Add role definitions to `rbac.roles` for every role string you use
-6. Update RLS policies to use the new function names (`has_role`, `is_member`, etc.)
-7. Add RLS policies on the `rbac.*` tables themselves (see `examples/policies/quickstart.sql`)
+- **Wildcard `'*'` in `grantable_roles`** — A role with `grantable_roles = ['*']` can assign any role and any permission, including roles added in the future.
 
-### New Examples
+- **Privilege escalation prevention** — `add_member()`, `update_member_roles()`, `create_invite()`, `grant_member_permission()`, and `revoke_member_permission()` now enforce that the caller's cached grant scope covers the target roles/permissions. Built-in, not left to app author policy.
 
-- `examples/policies/quickstart.sql` — recommended starter RLS policies for `rbac.*` tables
-- `examples/setup/create_public_wrappers.sql` — opt-in script to create `public.*` wrapper functions
-- `examples/setup/remove_public_wrappers.sql` — how to drop previously created `public.*` wrappers
-- `examples/policies/permission_centric.sql` — RLS example using dot-notation permissions via `has_permission()`
+- **New RPCs: `create_permission()`, `delete_permission()`, `list_permissions()`** — service_role management of the permissions registry.
 
-### Claims Cache Refactor (v5.0.0 update)
+- **New RPC: `set_role_grantable_roles()`** — service_role management of a role's grant scope.
 
-- **New `user_claims` table**: Extension-owned claims cache (`user_id PK`, `claims jsonb`). Replaces `auth.users.raw_app_meta_data->'groups'` as the storage backend for group/role data. `ON DELETE CASCADE` automatically cleans up claims when a user is deleted.
-- **SECURITY DEFINER reduction**: `_sync_member_metadata`, `db_pre_request`, and `_get_user_groups` are now `SECURITY INVOKER`. None of these functions need to read or write `auth.users` anymore. Only `create_group` and `accept_invite` retain SECURITY DEFINER (bootstrap operations).
-- **`custom_access_token_hook(event jsonb)`**: New Supabase Auth Hook function. Injects `app_metadata.groups` into JWTs at token creation time by reading from `user_claims`. Register via `config.toml` `[auth.hook.custom_access_token]`. Public wrapper auto-created at `public.custom_access_token_hook`.
+- **Extended `create_role()` signature** — Now accepts `p_permissions text[]` and `p_grantable_roles text[]` for creating fully-configured roles in one call.
 
-### New Tests
+- **`list_roles()` returns `grantable_roles`** — The `grantable_roles` column is included in the output.
 
-- `13_management_rpcs.test.sql` — management RPC tests (12 assertions)
-- `14_roles_array.test.sql` — roles array behavior tests (7 assertions)
-- `15_role_definitions.test.sql` — role validation and CRUD tests (8 assertions)
-- `16_auth_hook.test.sql` — custom_access_token_hook tests (5 assertions)
-- `17_permissions.test.sql` — permission CRUD RPCs, claims resolution, `has_permission()` for all auth tiers, deduplication (15 assertions)
-- `18_permission_access_control.test.sql` — EXECUTE grants on permission helpers and management RPCs (8 assertions)
+- **Private schema architecture** — All tables in `rbac` schema, not exposed via PostgREST. Public wrappers are opt-in.
 
-## 4.5.0
+- **Trigger-based claims cache** — Three triggers maintain the `user_claims` cache automatically. Cache is rebuilt on membership changes, permission override changes, and role definition changes.
 
-- Add `user_has_any_group_role(group_id uuid, group_roles text[])` — returns `true` if the current user has **any** of the listed roles in the group. Uses the JSONB `?|` operator for a single-call alternative to multiple `user_has_group_role()` calls joined with `OR`. Same auth tier dispatch (authenticated/anon/service_role) as `user_has_group_role()`.
-- Add `user_has_all_group_roles(group_id uuid, group_roles text[])` — returns `true` if the current user has **all** of the listed roles in the group. Uses the JSONB `?&` operator; useful when a policy requires a user to hold multiple roles or permission strings simultaneously.
-- Update `examples/policies/custom_table_isolation.sql` — Option A "Admins can write/update projects" policies now use `user_has_any_group_role(group_id, ARRAY['owner', 'admin'])` instead of separate `user_has_group_role()` calls, demonstrating the new bulk helper.
-- Add `examples/policies/hardened_setup.sql` — shows the defense-in-depth pattern of `REVOKE ALL` on RBAC tables followed by targeted `GRANT` statements, reducing reliance on RLS as the sole access control layer.
-- Add pgTAP regression tests for `accept_group_invite()` (9 assertions in `supabase/tests/11_accept_invite.test.sql`) — covers happy-path acceptance, `accepted_at`/`user_id` fields, trigger-driven `raw_app_meta_data` sync, expired invite rejection, double-acceptance rejection, nonexistent invite rejection, and multi-role invite row insertion.
-- Add pgTAP regression tests for REVOKE/GRANT access control (5 assertions in `supabase/tests/12_access_control.test.sql`) — verifies that `authenticated` and `anon` cannot execute `db_pre_request()`, that `anon` cannot execute `accept_group_invite()`, and that `authenticated` can execute the public-facing helper functions.
+- **Auth hook** — Optional `custom_access_token_hook` injects claims into JWTs at token creation time.
 
-## 4.4.0
+- **Invite RPCs** — `create_invite()` (with escalation check) and `delete_invite()`.
 
-- Add `accept_group_invite(p_invite_id uuid)` — atomic invite acceptance as a `SECURITY DEFINER` RPC function. The edge function's previous two-step approach (UPDATE then INSERT) was non-atomic; if the INSERT failed, the invite was consumed but the user received no group access. The new function wraps both writes in a single transaction and uses `SELECT ... FOR UPDATE` to prevent concurrent acceptance races.
-- Use `auth.uid()` (not a caller-supplied parameter) to bind the invite to the authenticated user — the same identity-from-JWT pattern used by `db_pre_request()` and `_get_user_groups()`. This prevents any authenticated user from accepting an invite on behalf of another.
-- Add `REVOKE EXECUTE ... FROM PUBLIC` / `GRANT EXECUTE ... TO authenticated` on `accept_group_invite` — defense-in-depth so anon callers are rejected before the function body executes.
-- Add `REVOKE EXECUTE ... FROM PUBLIC` / `GRANT EXECUTE ... TO authenticator` on `db_pre_request` — this function is only meant to be invoked by PostgREST's pre-request hook mechanism; restricting it prevents direct RPC calls from end users.
-- Simplify `supabase/functions/invite/index.ts` — the edge function is now a thin wrapper that calls `rpc('accept_group_invite', ...)` with the user's own JWT instead of the service role key. All atomicity and security logic lives in the database function.
-- Add pgTAP regression tests for RLS policy enforcement (5 assertions in `supabase/tests/09_rls_policies.test.sql`) — verifies group isolation: users can only read `sensitive_data` rows belonging to groups they are members of; anon and groupless users receive zero rows.
-- Add pgTAP regression tests for `jwt_is_expired()` (4 assertions in `supabase/tests/10_jwt_validation.test.sql`) — covers expired token, valid future token, empty JWT context, and missing `exp` claim.
-- Add `examples/policies/custom_table_isolation.sql` — shows both role-centric (owner/admin/viewer) and permission-centric (project.read/write/delete) RLS policies for a custom application table with a `group_id` FK.
+- **Direct permission overrides** — `grant_member_permission()`, `revoke_member_permission()`, `list_member_permissions()`.
 
-## 4.3.0
+### Security Architecture
 
-- Fix #34: Storage RLS policies now get fresh claims instead of stale JWT data — `get_user_claims()` falls back to a new `_get_user_groups()` SECURITY DEFINER helper that reads `auth.users` directly, giving Supabase Storage the same freshness guarantee as PostgREST requests. Existing RLS policies require no changes.
-- Add pgTAP regression tests for Storage claims path (8 assertions in `supabase/tests/08_storage_claims.test.sql`)
-- Add `examples/policies/storage_rls.sql` — two patterns for Storage RLS (group_id in path vs. group_id in object metadata)
-
-## 4.2.0
-
-- Add invite expiration support — new nullable `expires_at` column on `group_invites`. Invites with `expires_at = NULL` never expire (backwards compatible; all existing invites get `NULL`). The invite acceptance edge function now rejects invites whose `expires_at` is set and in the past.
-- Add pgTAP regression test for invite expiration (7 assertions)
-- Add "Security Considerations" section to README covering privilege escalation risk, invite expiration, and Storage claims freshness
-- Fix outdated function names in README (`is_group_member` / `has_group_role` → `user_is_group_member` / `user_has_group_role`; removed `jwt_*` methods were removed in v1.0.0)
-- Fix incorrect function signature in README invite policy example (`user_has_group_role(group_id, 'admin')` — no `auth.uid()` argument)
-
-## 4.1.0
-
-- Fix #37: Groupless users no longer crash `get_user_claims()` — `db_pre_request` now stores `'{}'` instead of NULL for users with no group memberships, and `get_user_claims()` handles empty string gracefully via `NULLIF`
-- Fix #11: Deleting a user no longer crashes the `update_user_roles` trigger — the trigger now skips the `auth.users` update when the user no longer exists
-- Fix #38: Added `ON DELETE CASCADE` to all foreign keys on `group_users` and `group_invites` — deleting a group or user now automatically cleans up related rows and propagates metadata cleanup via the existing trigger. **Behavioral change**: previously, deleting a group or user with existing memberships was blocked by a FK violation; after this upgrade, those deletes will cascade automatically. No existing row data is modified by this upgrade.
-- Fix #39: `user_has_group_role` and `user_is_group_member` now return `true` when `auth.role() = 'service_role'`, consistent with service_role bypassing RLS
-- Fix #29: `db_pre_request` is now registered with a schema-qualified name (`@extschema@.db_pre_request`) so custom schema installs resolve the function correctly
-- Add pgTAP regression tests for all fixed bugs (30 tests across 5 test files)
-
-## 4.0.0
-
-- BREAKING: Remove user_roles view
-- BREAKING: Remove delete_group_users function (and trigger on_delete_user)
-- BREAKING: Remove update_group_users_email function (and trigger update_group_users_email)
-- BREAKING: Modify update_user_roles function to remove the ability to update the user's email in metadata
-- Add example view to replace user_roles
-- Add example trigger functions to help keep user data synchronized into the group_users metadata
-- Updated readme and added a section comparing it to the official supabase RBAC solution
-
-## 3.0.0
-
-- BREAKING: Remove "name" column from groups table
-- BREAKING: user_roles view now properly adheres to RLS policies via security invoker (requires Postgres 15+)
-- Add "metadata" column to groups table
-- Add "metadata" column to group_users table
-- Add trigger to keep metadata columns updated when a user record is updated
-- Modify user_roles view to reference metadata columns instead of auth.users table
-- Improve `update_user_roles` performance by eliminating subqueries, updating only the affected roles, and adding the ability to update the record's metadata with the user's email
-- Reorganize example files
-- Update readme links so they work on database.dev
-- Add RLS policy examples to readme
-
-## 2.0.2
-
-- Remove references to "public" schema
-
-## 2.0.1
-
-- Fixed an issue where impersonating an anonymous user in the supabase studio would appear to grant access to data otherwise restricted by RLS. This issue did not affect real requests in production.
-
-## 2.0.0
-
-- BREAKING: Requires the "moddatetime" extension to be installed prior to installing this extension
-- BREAKING: "created_at" column in groups table is now non-nullable
-- Adds "updated_at" column to groups and group_users tables
-- Adds trigger to automatically update "updated_at" column when a group or group_user record is updated
-- Update control file to specify this as the default version
-
-## 1.0.0
-
-- BREAKING: Replace get_req_groups with get_user_claims
-- BREAKING: Rename is_group_member to user_is_group_member
-- BREAKING: Rename has_group_role to user_has_group_role
-- BREAKING: Remove jwt methods (primary methods are now performant enough)
-- BREAKING: Invite system now accepts multiple roles in a single invite (fixes #20)
-- BREAKING: Remove set_group_owner and instead provide an example of how to implement it
-- BREAKING: Remove add_group_user_by_email and instead provide an example of how to implement it
-- Mark remaining read-only methods as stable
-- Use auth.role() to determine authentication type (fixes #15)
-- Set search paths for security definer functions (fixes #18)
-- Use user-specified schema to determine search paths at time of extension creation (fixes #16)
-
-## 0.0.4
-
-- Add invite feature (fixes #7)
-
-## 0.0.3
-
-- Implement db_pre_request hook to populate request.groups context
-- Add get_req_groups method to get group claims from request.groups context
-- Modify jwt methods to use get_req_groups method
-
-## 0.0.2
-
-- Updated README.md
-
-## 0.0.1
-
-- Initial release
+- 8 SECURITY DEFINER functions (down from broad defaults in v4): `create_group`, `accept_invite`, `_sync_member_metadata`, `_sync_member_permission`, `_on_role_definition_change`, `_validate_roles`, `_validate_permissions`, `_validate_grantable_roles`.
+- Deny-all RLS by default on all tables.
+- Internal helpers locked down: `REVOKE EXECUTE FROM PUBLIC` on all `_`-prefixed functions.
+- `rbac.roles` and `rbac.permissions` tables hidden from `authenticated` by default.
+- `user_claims` write access restricted to DEFINER trigger functions.
