@@ -111,7 +111,7 @@ When making changes to the core extension:
 - **Fresh claims on every request**: `db_pre_request` reads `rbac.user_claims` on each API call.
 - **Auth Hook**: `custom_access_token_hook` injects group claims into JWTs at token creation (optional, complements db_pre_request).
 - **Role validation**: All role assignments validated against the `roles` table.
-- **SECURITY INVOKER by default**: Management RPCs respect RLS. Only `create_group` and `accept_invite` are DEFINER (bootstrap operations). The three trigger functions (`_sync_member_metadata`, `_sync_member_permission`, `_on_role_definition_change`) are also DEFINER so they can write to `user_claims` without requiring INSERT/UPDATE grants on `authenticated`. `_validate_roles()`, `_validate_permissions()`, and `_validate_grantable_roles()` are also DEFINER so INVOKER RPCs can validate names and grant scope without requiring `authenticated` to have SELECT on `rbac.roles` or `rbac.permissions`. Total: 8 DEFINER functions.
+- **SECURITY INVOKER by default**: Management RPCs respect RLS. Only `accept_invite` is a DEFINER user-facing RPC (bootstrap operation). `create_group` is INVOKER — an INSERT policy on `rbac.groups` is required. The `_on_group_created` AFTER INSERT trigger (DEFINER) bootstraps the creator's membership row. The three claims triggers (`_sync_member_metadata`, `_sync_member_permission`, `_on_role_definition_change`) are also DEFINER so they can write to `user_claims` without requiring INSERT/UPDATE grants on `authenticated`. `_validate_roles()`, `_validate_permissions()`, and `_validate_grantable_roles()` are also DEFINER so INVOKER RPCs can validate names and grant scope without requiring `authenticated` to have SELECT on `rbac.roles` or `rbac.permissions`. Total: 8 DEFINER functions.
 
 ## Core Tables (in `@extschema@`)
 
@@ -138,7 +138,7 @@ When making changes to the core extension:
 - `get_claims()` → jsonb
 
 ### Management RPCs
-- `create_group(p_name text, p_metadata jsonb, p_creator_roles text[])` → uuid [DEFINER]
+- `create_group(p_name text, p_metadata jsonb, p_creator_roles text[])` → uuid [INVOKER]
 - `delete_group(p_group_id uuid)` [INVOKER]
 - `add_member(p_group_id uuid, p_user_id uuid, p_roles text[])` → uuid [INVOKER]
 - `remove_member(p_group_id uuid, p_user_id uuid)` [INVOKER]
@@ -170,6 +170,13 @@ When making changes to the core extension:
 ## File Relationships
 
 ```
+groups (INSERT)
+    └── trigger: on_group_created
+        └── calls: _on_group_created()  [SECURITY DEFINER]
+            └── reads auth.uid() — skips if NULL
+            └── validates creator roles
+            └── INSERT into members (bootstraps creator membership)
+
 members (INSERT/UPDATE/DELETE)
     └── trigger: on_change_sync_member_metadata
         └── calls: _sync_member_metadata()  [SECURITY DEFINER]

@@ -15,15 +15,28 @@ A PostgreSQL extension that gives your Supabase project:
 
 ## Install
 
-```sql
--- In a Supabase migration:
-select dbdev.install('pointsource-supabase_rbac');
-create extension "pointsource-supabase_rbac"
-    schema rbac
-    version '5.0.0';
+**Prerequisite**: `pg_tle` must be enabled in your Supabase project.
+
+**1. Install the dbdev CLI** ([other platforms](https://database.dev/docs/cli)):
+```bash
+brew install supabase/tap/dbdev
+```
+
+**2. Generate an install migration:**
+```bash
+dbdev add -o "./supabase/migrations/" -v 5.0.0 -s rbac package -n pointsource@supabase_rbac
+```
+
+**3. Apply the migration:**
+```bash
+supabase migration up
+# or
+supabase db reset
 ```
 
 Then add RLS policies. See [Quickstart](#quickstart).
+
+> **Note:** Supabase logical backups may fail to restore TLE extensions if `auth.users` isn't available at restore time. See [Issue #41](https://github.com/point-source/supabase-tenant-rbac/issues/41).
 
 ## Quickstart
 

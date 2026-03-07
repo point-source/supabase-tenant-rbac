@@ -42,9 +42,12 @@ CREATE POLICY "Owners can delete their groups"
     TO authenticated
     USING (rbac.has_role(id, 'owner'));
 
--- NOTE: Group creation is handled by the create_group() RPC (SECURITY DEFINER),
--- which bypasses RLS. No INSERT policy is needed for normal use.
--- If you allow direct INSERTs (not recommended), add an INSERT policy here.
+-- create_group() is SECURITY INVOKER — an INSERT policy on rbac.groups is required.
+-- Adjust or remove this policy to control who can create groups.
+-- Omit it entirely in single-tenant apps to prevent users from creating new groups.
+CREATE POLICY "Authenticated users can create groups"
+    ON rbac.groups FOR INSERT TO authenticated
+    WITH CHECK (true);
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- rbac.members

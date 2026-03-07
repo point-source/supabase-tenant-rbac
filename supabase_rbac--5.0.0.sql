@@ -7,7 +7,7 @@
 -- installation to expose them in the public schema for PostgREST RPC discovery.
 --
 -- SECURITY DEFINER functions (8 total):
---   1. create_group              — bootstrap: caller has no prior membership
+--   1. _on_group_created         — trigger: auto-creates membership for group creator (bootstrap)
 --   2. accept_invite             — bootstrap: atomically adds membership without prior RLS
 --   3. _sync_member_metadata     — trigger, writes user_claims without authenticated INSERT
 --   4. _sync_member_permission   — trigger, writes user_claims without authenticated INSERT
@@ -635,6 +635,44 @@ BEGIN
 END;
 $function$;
 
+-- Trigger function: auto-create membership row for group creator after INSERT on groups.
+-- SECURITY DEFINER so it can INSERT into members even though the caller has no prior
+-- membership (and therefore cannot pass the members INSERT RLS policy).
+-- Trigger functions (RETURNS trigger) cannot be called directly via RPC or REST.
+-- Skips when auth.uid() is NULL (service_role / migration INSERTs).
+CREATE OR REPLACE FUNCTION @extschema@._on_group_created()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = @extschema@
+AS $function$
+DECLARE
+    _user_id uuid;
+    _roles   text[];
+BEGIN
+    _user_id := auth.uid();
+    IF _user_id IS NULL THEN
+        RETURN NEW;  -- service_role / migration insert — skip
+    END IF;
+
+    BEGIN
+        _roles := current_setting('rbac.creator_roles')::text[];
+    EXCEPTION WHEN OTHERS THEN
+        _roles := ARRAY['owner'];
+    END;
+
+    -- Validate roles exist (guards direct INSERT path where create_group didn't run)
+    PERFORM _validate_roles(_roles);
+
+    INSERT INTO @extschema@.members (group_id, user_id, roles)
+    VALUES (NEW.id, _user_id, ARRAY(SELECT DISTINCT unnest(_roles) ORDER BY 1));
+
+    RETURN NEW;
+END;
+$function$;
+
+REVOKE EXECUTE ON FUNCTION @extschema@._on_group_created() FROM PUBLIC;
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- RLS / CLAIMS HELPERS
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -884,7 +922,9 @@ GRANT EXECUTE ON FUNCTION @extschema@.has_all_permissions(uuid, text[]) TO authe
 -- ─────────────────────────────────────────────────────────────────────────────
 
 -- Create a group and add the caller as a member with creator_roles.
--- SECURITY DEFINER because the caller has no prior membership (cannot pass RLS).
+-- SECURITY INVOKER — INSERT into groups is subject to RLS. Add an INSERT policy on
+-- rbac.groups to allow group creation (see examples/policies/quickstart.sql).
+-- The _on_group_created AFTER INSERT trigger (SECURITY DEFINER) handles membership.
 CREATE OR REPLACE FUNCTION @extschema@.create_group(
     p_name          text,
     p_metadata      jsonb  DEFAULT '{}'::jsonb,
@@ -892,12 +932,11 @@ CREATE OR REPLACE FUNCTION @extschema@.create_group(
 )
 RETURNS uuid
 LANGUAGE plpgsql
-SECURITY DEFINER
 SET search_path = @extschema@
 AS $function$
 DECLARE
     _user_id  uuid := auth.uid();
-    _group_id uuid;
+    _group_id uuid := gen_random_uuid();
 BEGIN
     IF _user_id IS NULL THEN
         RAISE EXCEPTION 'Not authenticated';
@@ -905,12 +944,15 @@ BEGIN
 
     PERFORM _validate_roles(p_creator_roles);
 
-    INSERT INTO @extschema@.groups (name, metadata)
-    VALUES (p_name, p_metadata)
-    RETURNING id INTO _group_id;
+    -- Store creator roles for the _on_group_created trigger.
+    PERFORM set_config('rbac.creator_roles',
+        ARRAY(SELECT DISTINCT unnest(p_creator_roles) ORDER BY 1)::text,
+        true);
 
-    INSERT INTO @extschema@.members (group_id, user_id, roles)
-    VALUES (_group_id, _user_id, ARRAY(SELECT DISTINCT unnest(p_creator_roles) ORDER BY 1));
+    -- Pre-generate the UUID to avoid RETURNING, which would require passing the
+    -- SELECT policy (is_member check) before the trigger creates the membership.
+    INSERT INTO @extschema@.groups (id, name, metadata)
+    VALUES (_group_id, p_name, p_metadata);
 
     RETURN _group_id;
 END;
@@ -1593,6 +1635,7 @@ REVOKE EXECUTE ON FUNCTION @extschema@._check_permission_escalation(uuid, text) 
 REVOKE EXECUTE ON FUNCTION @extschema@._jwt_is_expired() FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@._set_updated_at() FROM PUBLIC;
 -- Trigger-only functions: no EXECUTE for any non-superuser role
+REVOKE EXECUTE ON FUNCTION @extschema@._on_group_created() FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@._sync_member_metadata() FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@._sync_member_permission() FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION @extschema@._on_role_definition_change() FROM PUBLIC;
@@ -1618,6 +1661,10 @@ GRANT EXECUTE ON FUNCTION @extschema@._validate_grantable_roles(text[]) TO authe
 CREATE TRIGGER handle_updated_at
     BEFORE UPDATE ON @extschema@.groups
     FOR EACH ROW EXECUTE FUNCTION @extschema@._set_updated_at();
+
+CREATE TRIGGER on_group_created
+    AFTER INSERT ON @extschema@.groups
+    FOR EACH ROW EXECUTE FUNCTION @extschema@._on_group_created();
 
 CREATE TRIGGER handle_updated_at
     BEFORE UPDATE ON @extschema@.members

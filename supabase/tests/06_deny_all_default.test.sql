@@ -1,7 +1,8 @@
 -- Tests for deny-all default enforcement (DA-01 through DA-08).
 -- Verifies that authenticated users with no group membership cannot read
 -- group data, that sensitive tables lack table-level grants for authenticated,
--- and that create_group (SECURITY DEFINER) still works despite deny-all RLS.
+-- and that create_group (SECURITY INVOKER) is blocked by deny-all RLS when
+-- no INSERT policy exists on rbac.groups.
 
 BEGIN;
 SELECT plan(8);
@@ -107,12 +108,13 @@ SELECT ok(
     'DA-07: authenticated has no INSERT or UPDATE on rbac.user_claims — claims are trigger-managed'
 );
 
--- ── DA-08: alice calls create_group (SECURITY DEFINER) — succeeds despite RLS ──
--- create_group is SECURITY DEFINER and bypasses RLS for INSERTs into groups/members.
--- It uses auth.uid() for the creator user_id, not a spoofable parameter.
+-- ── DA-08: alice calls create_group (SECURITY INVOKER) — blocked by deny-all RLS ─
+-- create_group is now SECURITY INVOKER. Without an INSERT policy on rbac.groups,
+-- the INSERT is blocked by RLS and create_group must raise an exception.
+-- Drop the migration INSERT policy (if present) to simulate the deny-all scenario.
+DROP POLICY IF EXISTS "Authenticated users can create groups" ON rbac.groups;
+
 DO $$
-DECLARE
-    v_new_group_id uuid;
 BEGIN
     PERFORM set_config('request.jwt.claims',
         '{"role":"authenticated","sub":"aa000000-0000-0000-0000-000000000001","exp":9999999999}',
@@ -123,8 +125,7 @@ BEGIN
         true);
     SET LOCAL ROLE authenticated;
     BEGIN
-        v_new_group_id := rbac.create_group('DA Test New Group', '{}', ARRAY['owner']);
-        PERFORM set_config('test.da08_group_id', v_new_group_id::text, true);
+        PERFORM rbac.create_group('DA Test New Group', '{}', ARRAY['owner']);
         PERFORM set_config('test.da08_succeeded', 'true', true);
     EXCEPTION WHEN OTHERS THEN
         PERFORM set_config('test.da08_succeeded', 'false', true);
@@ -133,19 +134,8 @@ BEGIN
 END$$;
 
 SELECT ok(
-    current_setting('test.da08_succeeded') = 'true'
-    AND EXISTS (
-        SELECT 1 FROM rbac.groups
-        WHERE id = current_setting('test.da08_group_id')::uuid
-          AND name = 'DA Test New Group'
-    )
-    AND EXISTS (
-        SELECT 1 FROM rbac.members
-        WHERE group_id = current_setting('test.da08_group_id')::uuid
-          AND user_id = 'aa000000-0000-0000-0000-000000000001'::uuid
-          AND 'owner' = ANY(roles)
-    ),
-    'DA-08: create_group (SECURITY DEFINER) bypasses deny-all RLS — group and membership created'
+    current_setting('test.da08_succeeded') = 'false',
+    'DA-08: create_group (SECURITY INVOKER) blocked by deny-all RLS — no INSERT policy on groups'
 );
 
 SELECT * FROM finish();

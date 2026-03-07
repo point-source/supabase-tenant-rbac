@@ -38,7 +38,7 @@ There is no automated upgrade from v4.x to v5.0.0. See `docs/MIGRATION_GUIDE.md`
 
 ### Security Architecture
 
-- 8 SECURITY DEFINER functions (down from broad defaults in v4): `create_group`, `accept_invite`, `_sync_member_metadata`, `_sync_member_permission`, `_on_role_definition_change`, `_validate_roles`, `_validate_permissions`, `_validate_grantable_roles`.
+- 8 SECURITY DEFINER functions (down from broad defaults in v4): `_on_group_created`, `accept_invite`, `_sync_member_metadata`, `_sync_member_permission`, `_on_role_definition_change`, `_validate_roles`, `_validate_permissions`, `_validate_grantable_roles`.
 - Deny-all RLS by default on all tables.
 - Internal helpers locked down: `REVOKE EXECUTE FROM PUBLIC` on all `_`-prefixed functions.
 - `rbac.roles` and `rbac.permissions` tables hidden from `authenticated` by default.

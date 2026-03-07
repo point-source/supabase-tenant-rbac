@@ -143,9 +143,22 @@ RLS: enabled. `authenticated` has SELECT on own row only. `authenticator` has SE
 
 ## Trigger Flow
 
-Three triggers maintain the claims cache automatically.
+Three triggers maintain the claims cache automatically. A fourth trigger bootstraps group creator membership.
 
 ```
+groups table
+    INSERT
+        │
+        └── trigger: on_group_created
+            (AFTER INSERT, FOR EACH ROW)
+                │
+                └── calls: _on_group_created() [SECURITY DEFINER]
+                        │
+                        └── reads auth.uid() — skips if NULL (service_role/migration)
+                        └── reads rbac.creator_roles session var (set by create_group)
+                        └── validates roles via _validate_roles()
+                        └── INSERT into rbac.members (bootstraps creator membership)
+
 members table
     INSERT / UPDATE / DELETE
         │
@@ -422,7 +435,7 @@ The extension minimizes SECURITY DEFINER surface. Only 8 functions have this pro
 
 | Function | Type | Why DEFINER | What it does | What it does NOT do |
 |----------|------|-------------|-------------|---------------------|
-| `create_group()` | Management RPC | Caller has no prior membership to satisfy RLS on `groups` or `members` at creation time | Creates the group row, inserts caller as member with specified roles | Does not bypass RLS on any subsequent operation |
+| `_on_group_created()` | Trigger function | AFTER INSERT on `groups`. Caller has no prior membership to satisfy RLS on `members` at creation time | Reads `auth.uid()`, validates creator roles, inserts caller as member. Skips when `auth.uid()` is NULL (service_role/migration inserts) | Cannot be called directly via RPC or REST (trigger-only) |
 | `accept_invite()` | Management RPC | Caller has no prior membership in the target group | Validates invite, marks it used, upserts caller as member | Does not bypass membership validation or expiry check |
 | `_sync_member_metadata()` | Trigger function | Must write to `user_claims` without requiring INSERT/UPDATE grants for `authenticated` | Calls `_build_user_claims()`, upserts to `user_claims` | Cannot be called directly via RPC or REST (trigger-only) |
 | `_sync_member_permission()` | Trigger function | Must write to `user_claims` without requiring INSERT/UPDATE grants for `authenticated` | Calls `_build_user_claims()`, upserts to `user_claims` | Cannot be called directly via RPC or REST (trigger-only) |
@@ -436,4 +449,4 @@ All other internal helper functions (`_build_user_claims`, `_get_user_groups`, `
 All `_`-prefixed functions have `REVOKE EXECUTE FROM PUBLIC`. Selective re-grants:
 - `_get_user_groups`: re-granted to `authenticated, service_role` (called by `get_claims()` Storage fallback)
 - `_jwt_is_expired`: re-granted to `authenticated, anon, service_role` (called by all RLS helpers)
-- `_build_user_claims`, `_validate_roles`, `_validate_permissions`, `_validate_grantable_roles`, `_set_updated_at`: no re-grant (DEFINER callers or trigger mechanism only)
+- `_build_user_claims`, `_on_group_created`, `_validate_roles`, `_validate_permissions`, `_validate_grantable_roles`, `_set_updated_at`: no re-grant (DEFINER callers or trigger mechanism only)

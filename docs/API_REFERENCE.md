@@ -264,13 +264,13 @@ CREATE POLICY "can download" ON public.exports
 
 **Signature:** `create_group(p_name text, p_metadata jsonb DEFAULT '{}', p_creator_roles text[] DEFAULT ARRAY['owner']) → uuid`
 
-**INVOKER/DEFINER:** DEFINER
+**INVOKER/DEFINER:** INVOKER
 
 **Required role:** `authenticated`
 
 **Description:** Creates a new group and adds the calling user as a member with the specified roles. Returns the new group's UUID.
 
-SECURITY DEFINER is required because the caller has no prior membership in the new group — without it, the INSERT into `groups` and `members` would fail RLS.
+SECURITY INVOKER — the INSERT into `rbac.groups` is subject to RLS. An INSERT policy on `rbac.groups` is required (see `examples/policies/quickstart.sql`). The membership row is created by the `_on_group_created` AFTER INSERT trigger (SECURITY DEFINER), which uses `auth.uid()` to bind the caller.
 
 **Parameters:**
 - `p_name text` — display name for the group (required)

@@ -54,17 +54,17 @@
 
 ### Product Overview
 
-Supabase Tenant RBAC is a PostgreSQL TLE (Trusted Language Extension) that provides multi-tenant, role-based access control for Supabase projects. It allows application authors to define groups (tenants/organizations), roles, and permissions, and provides the machinery for managing membership, enforcing access policies via RLS, and keeping authorization state fresh across all request types.
+Supabase Tenant RBAC is a PostgreSQL TLE (Trusted Language Extension) that provides role-based access control for single- and multi-tenant Supabase projects. It allows application authors to define groups (tenants/organizations), roles, and permissions, and provides the machinery for managing membership, enforcing access policies via RLS, and keeping authorization state fresh across all request types.
 
 ### Target Audience
 
 **Primary:** The author (point-source), for use in personal Supabase projects.
 
-**Secondary:** The growing community of Supabase developers building multi-tenant SaaS applications who need RBAC beyond what Supabase provides natively. These users range from RBAC-experienced developers who need a Supabase-native solution to developers new to RBAC who need guidance on the concepts alongside the tooling.
+**Secondary:** The growing community of Supabase developers building single- or multi-tenant applications who need RBAC beyond what Supabase provides natively. These users range from RBAC-experienced developers who need a Supabase-native solution to developers new to RBAC who need guidance on the concepts alongside the tooling.
 
 ### Core Value Proposition
 
-1. **Multi-tenant RBAC that Supabase doesn't provide out of the box.** The official Supabase RBAC docs cover single-tenant role assignment but not the tenant → role → permission hierarchy that SaaS applications need.
+1. **Group-scoped RBAC that Supabase doesn't provide out of the box.** The official Supabase RBAC docs cover single-tenant role assignment but not the tenant → role → permission hierarchy that SaaS applications need. Works for single-tenant apps (one group, restrict creation via deny-all RLS) and multi-tenant apps (many groups, opt-in INSERT policy on `rbac.groups`).
 2. **Immediate claim freshness.** Unlike JWT-only approaches where revoked access persists until token expiry, claim changes take effect on the next API request.
 3. **Secure by default.** Deny-all RLS, private schema, minimal SECURITY DEFINER surface, and built-in privilege escalation prevention.
 4. **Mechanism, not policy.** The extension provides the RBAC engine and helpers; the app author writes the policies that fit their application.
@@ -86,7 +86,7 @@ The v5 rewrite was triggered by the convergence of several pressures:
 - **Mechanism, not policy.** The extension provides the RBAC engine (tables, triggers, caching, helper functions). The app author provides the policy (RLS policies, role definitions, permission assignments). The extension does not dictate _what_ roles or permissions exist — it provides the infrastructure for defining and enforcing them.
 - **Write-time resolution, read-time simplicity.** Expensive operations (permission resolution, grant scope computation) happen when memberships or role definitions change. RLS policy checks at query time are pure cache reads with no joins.
 - **Deny-all by default.** Nothing works until the app author explicitly allows it. This is safer than shipping permissive defaults that users forget to tighten.
-- **Minimal SECURITY DEFINER surface.** Only functions that _must_ bypass RLS (because the caller has no prior state to satisfy a policy) are SECURITY DEFINER. Everything else is SECURITY INVOKER.
+- **Minimal SECURITY DEFINER surface.** Only functions that _must_ bypass RLS (because the caller has no prior state to satisfy a policy) are SECURITY DEFINER. The only user-facing DEFINER function is `accept_invite`; `create_group` is INVOKER with an AFTER INSERT trigger (`_on_group_created`, DEFINER) handling the membership bootstrap. Everything else is SECURITY INVOKER.
 
 ---
 
@@ -226,7 +226,7 @@ All tables live in a private schema (e.g., `rbac`) not exposed via PostgREST. Al
 
 | Function                     | DEFINER/INVOKER   | Escalation Check                                                    | Purpose                               |
 | ---------------------------- | ----------------- | ------------------------------------------------------------------- | ------------------------------------- |
-| `create_group()`             | DEFINER           | N/A (creator becomes owner)                                         | Create group, add caller as owner     |
+| `create_group()`             | INVOKER           | N/A (RLS INSERT policy on `groups` controls creation)               | Create group, add caller as owner     |
 | `delete_group()`             | INVOKER           | N/A (RLS enforced)                                                  | Delete group and cascade              |
 | `add_member()`               | INVOKER           | Yes — target roles must be in caller's `grantable_roles`            | Add user to group with roles          |
 | `remove_member()`            | INVOKER           | N/A (RLS enforced)                                                  | Remove user from group                |
@@ -291,7 +291,7 @@ On every PostgREST API request, `db_pre_request()` reads the current user's row 
 
 Only 8 functions are SECURITY DEFINER:
 
-1. `create_group()` — caller has no prior membership to satisfy RLS
+1. `_on_group_created()` — AFTER INSERT trigger on `groups`; bootstraps creator membership (caller has no prior membership to satisfy RLS on `members`)
 2. `accept_invite()` — caller has no prior membership to satisfy RLS
 3. `_sync_member_metadata()` — internal trigger, not callable by users
 4. `_sync_member_permission()` — internal trigger, not callable by users
@@ -300,11 +300,11 @@ Only 8 functions are SECURITY DEFINER:
 7. `_validate_permissions()` — same rationale for rbac.permissions
 8. `_validate_grantable_roles()` — same rationale for rbac.roles
 
-All user-facing management RPCs (except the two bootstrap operations above) are SECURITY INVOKER with RLS enforced.
+All user-facing management RPCs (except `accept_invite`) are SECURITY INVOKER with RLS enforced. `create_group()` is also INVOKER — the `_on_group_created` trigger handles the bootstrap membership insert.
 
 ### Deny-All by Default
 
-All extension tables have RLS enabled with zero policies. Nothing works until the app author adds policies. The `examples/policies/quickstart.sql` provides a recommended starting point.
+All extension tables have RLS enabled with zero policies. Nothing works until the app author adds policies. This includes group creation — `create_group()` is SECURITY INVOKER, so without an INSERT policy on `rbac.groups`, it is blocked by RLS. Single-tenant apps can omit this policy to prevent users from creating additional groups. The `examples/policies/quickstart.sql` provides a recommended starting point.
 
 ### Private Schema Architecture
 

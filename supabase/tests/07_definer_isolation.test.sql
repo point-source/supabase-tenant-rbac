@@ -1,4 +1,4 @@
--- Tests for SECURITY DEFINER function isolation (SD-01 through SD-06).
+-- Tests for function isolation (SD-01 through SD-06).
 -- Verifies that create_group/accept_invite behave atomically and only affect
 -- the specified scope, that internal trigger functions are inaccessible to
 -- authenticated/anon, and that accept_invite cannot be called twice.
@@ -26,6 +26,11 @@ INSERT INTO rbac.groups (id, name) VALUES
     ('f0000000-0000-0000-0000-000000000001'::uuid, 'SD Test Group G'),
     ('f0000000-0000-0000-0000-000000000002'::uuid, 'SD Test Group G2');
 
+-- create_group is SECURITY INVOKER — add a temporary INSERT policy so SD-01/SD-02
+-- can call it as authenticated. This policy is rolled back with the transaction.
+CREATE POLICY "SD test: allow group creation"
+    ON rbac.groups FOR INSERT TO authenticated WITH CHECK (true);
+
 -- Alice is a member of both G and G2 (so invited_by FK is satisfied)
 INSERT INTO rbac.members (group_id, user_id, roles) VALUES
     ('f0000000-0000-0000-0000-000000000001'::uuid,
@@ -44,8 +49,9 @@ INSERT INTO rbac.invites (id, group_id, roles, invited_by) VALUES
      ARRAY['viewer'],
      'aa000000-0000-0000-0000-000000000001'::uuid);
 
--- ── SD-01: create_group creates exactly one group and one member row ───────────
--- Track counts before and after to verify atomic creation.
+-- ── SD-01: create_group atomically creates exactly one group and one member row ─
+-- Track counts before and after to verify atomic creation (group INSERT triggers
+-- _on_group_created DEFINER trigger which adds the membership row).
 DO $$
 DECLARE
     v_new_group_id uuid;
@@ -74,8 +80,8 @@ SELECT ok(
     'SD-01: create_group creates exactly one group row and one membership row'
 );
 
--- ── SD-02: create_group uses caller auth.uid() for membership ─────────────────
--- The members row created by create_group must have user_id = alice's uuid.
+-- ── SD-02: _on_group_created trigger uses caller auth.uid() for membership ─────
+-- The members row created by the trigger must have user_id = alice's uuid.
 SELECT ok(
     EXISTS (
         SELECT 1 FROM rbac.members
@@ -83,7 +89,7 @@ SELECT ok(
           AND user_id = 'aa000000-0000-0000-0000-000000000001'::uuid
           AND 'owner' = ANY(roles)
     ),
-    'SD-02: create_group membership row uses caller auth.uid() — not a spoofable parameter'
+    'SD-02: _on_group_created trigger uses caller auth.uid() for membership — not a spoofable parameter'
 );
 
 -- ── SD-03: accept_invite(invite_1) adds bob to G only, invite_2 untouched ─────

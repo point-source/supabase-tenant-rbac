@@ -65,8 +65,9 @@ GRANT SELECT ON rbac.user_claims TO authenticated;
 -- Notes
 -- ──────────────────────────────────────────────────────────────────────────────
 --
--- 1. create_group() and accept_invite() are SECURITY DEFINER — they always have
---    access regardless of the table grants above.
+-- 1. create_group() is SECURITY INVOKER — it needs an INSERT policy on
+--    rbac.groups to succeed. accept_invite() is SECURITY DEFINER.
+--    The _on_group_created trigger (DEFINER) bootstraps the membership row.
 --
 -- 2. db_pre_request() is REVOKE'd from anon/authenticated and GRANT'd only to
 --    authenticator. This is handled by the extension itself.

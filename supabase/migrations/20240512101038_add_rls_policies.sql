@@ -19,8 +19,11 @@ for select
 to authenticated
 using (rbac.is_member(id));
 
--- NOTE: No INSERT policy — group creation goes through create_group() RPC
--- (SECURITY DEFINER), which bypasses RLS.
+-- create_group() is SECURITY INVOKER — an INSERT policy is required for group creation.
+-- This policy allows any authenticated user to create groups (adjust for your app).
+create policy "Authenticated users can create groups"
+on rbac.groups as permissive for insert
+to authenticated with check (true);
 
 create policy "Has update permission"
 on rbac.groups
