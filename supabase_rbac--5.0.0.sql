@@ -621,9 +621,11 @@ BEGIN
     FROM (
         SELECT DISTINCT m.user_id
         FROM @extschema@.members m
+        -- Use array containment (@>) so PostgreSQL can use members_roles_gin_idx.
         WHERE m.roles @> ARRAY[NEW.name]           -- direct holders of changed role
            OR EXISTS (
                SELECT 1 FROM @extschema@.roles r2
+               -- Same @> pattern keeps this indirect path GIN-friendly as well.
                WHERE m.roles @> ARRAY[r2.name]
                  AND NEW.name = ANY(r2.grantable_roles)
            )                                       -- indirect: holds a role whose grantable_roles lists the changed role
@@ -1335,6 +1337,7 @@ AS $function$
 BEGIN
     -- Check if any member has this role
     IF EXISTS (
+        -- Use @> to match the GIN index on members.roles.
         SELECT 1 FROM @extschema@.members WHERE roles @> ARRAY[p_name]
     ) THEN
         RAISE EXCEPTION 'Role "%" is in use by one or more members', p_name

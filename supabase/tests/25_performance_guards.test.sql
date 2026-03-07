@@ -1,5 +1,6 @@
 -- Tests for PERF-01 through PERF-03.
 -- Planner guardrails: ensure key lookups can use intended indexes.
+-- These are "index eligibility" checks, not strict latency benchmarks.
 
 BEGIN;
 SELECT plan(3);

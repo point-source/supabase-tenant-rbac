@@ -200,6 +200,27 @@ All three trigger functions are SECURITY DEFINER so they can write to `user_clai
 
 ---
 
+## Index-Aware Role Lookups
+
+The `members.roles` column has a GIN index (`members_roles_gin_idx`) to support fast role-membership lookups on large datasets.
+
+Internal role lookups that can touch many rows use array containment syntax:
+
+- `members.roles @> ARRAY[role_name]`
+
+instead of:
+
+- `role_name = ANY(members.roles)`
+
+This operator choice matters because the containment form is GIN-friendly, while the `ANY(...)` form is often planned as a sequential scan.
+
+The two main internal paths that rely on this are:
+
+- `delete_role()` "role in use" guard
+- `_on_role_definition_change()` affected-user selection
+
+---
+
 ## `_build_user_claims()` — The Resolution Algorithm
 
 `_build_user_claims(p_user_id uuid)` is the internal function that computes the full claims object for a user. It is called by all three trigger functions and is never called directly by application code.
