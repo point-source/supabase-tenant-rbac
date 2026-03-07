@@ -422,9 +422,10 @@ Management RPCs (add_member, update_member_roles, create_invite,
                  grant_member_permission, revoke_member_permission):
     └── reads: request.groups (grantable_roles, grantable_permissions)
     └── enforces escalation check before write
+    └── calls: _check_role_escalation() / _check_permission_escalation()
     └── calls: _validate_roles() [SECURITY DEFINER] to check role names
     └── calls: _validate_permissions() [SECURITY DEFINER] to check permission names
-    └── calls: _validate_grantable_roles() [SECURITY DEFINER] to check grantable scope
+    └── calls: _validate_grantable_roles() [SECURITY DEFINER] for role-definition validation
 ```
 
 ---
@@ -442,7 +443,7 @@ The extension minimizes SECURITY DEFINER surface. Only 8 functions have this pro
 | `_on_role_definition_change()` | Trigger function | Must write to `user_claims` for all affected users without requiring broad grants | Iterates affected members, calls `_build_user_claims()` per user | Cannot be called directly via RPC or REST (trigger-only) |
 | `_validate_roles()` | Internal helper | INVOKER RPCs need to validate role names against `rbac.roles`, but `authenticated` has no SELECT on that table | Reads `roles.name`, raises if any name is unrecognized | No writes; no user-controllable output beyond the exception message |
 | `_validate_permissions()` | Internal helper | INVOKER RPCs need to validate permission names against `rbac.permissions`, but `authenticated` has no SELECT on that table | Reads `permissions.name`, raises if any name is unrecognized | No writes; no user-controllable output beyond the exception message |
-| `_validate_grantable_roles()` | Internal helper | INVOKER RPCs need to check caller's grantable scope against `user_claims`, then validate target roles | Reads caller's `grantable_roles` from claims cache, validates target roles are within scope | No writes; cannot modify grant scope |
+| `_validate_grantable_roles()` | Internal helper | INVOKER role-management RPCs need to validate that `grantable_roles[]` entries exist in `rbac.roles` (or are `'*'`) | Reads `roles.name`, raises for undefined role names | No writes; no caller-scope escalation logic |
 
 All other internal helper functions (`_build_user_claims`, `_get_user_groups`, `_jwt_is_expired`, `_set_updated_at`) are SECURITY INVOKER.
 

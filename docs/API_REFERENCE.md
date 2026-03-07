@@ -532,7 +532,9 @@ SELECT rbac.accept_invite('9a8b7c6d-5e4f-3a2b-1c0d-e9f8a7b6c5d4');
 The edge function at `supabase/functions/invite/index.ts` accepts HTTP POST requests:
 ```bash
 curl --request POST \
-  'https://<project>.supabase.co/functions/v1/invite?invite_code=<invite-id>' \
+  'https://<project>.supabase.co/functions/v1/invite' \
+  --header 'Content-Type: application/json' \
+  --data '{"invite_code":"<invite-id>"}' \
   --header 'Authorization: Bearer <user-jwt>'
 ```
 

@@ -231,7 +231,7 @@ $function$;
 CREATE OR REPLACE FUNCTION @extschema@.db_pre_request()
 RETURNS void
 LANGUAGE plpgsql
-STABLE
+VOLATILE
 -- No SECURITY DEFINER — reads extension-owned user_claims table
 SET search_path = @extschema@
 AS $function$
@@ -1045,7 +1045,11 @@ BEGIN
     PERFORM _check_role_escalation(p_group_id, p_roles);
 
     UPDATE @extschema@.members
-    SET roles = p_roles
+    SET roles = ARRAY(
+        SELECT DISTINCT r
+        FROM unnest(coalesce(p_roles, '{}'::text[])) AS r
+        ORDER BY 1
+    )
     WHERE group_id = p_group_id AND user_id = p_user_id;
 
     IF NOT FOUND THEN
@@ -1112,7 +1116,15 @@ BEGIN
 
     -- Upsert membership — merge roles if already a member
     INSERT INTO @extschema@.members (group_id, user_id, roles)
-    VALUES (_invite.group_id, _user_id, _invite.roles)
+    VALUES (
+        _invite.group_id,
+        _user_id,
+        ARRAY(
+            SELECT DISTINCT r
+            FROM unnest(_invite.roles) AS r
+            ORDER BY 1
+        )
+    )
     ON CONFLICT (group_id, user_id)
     DO UPDATE SET roles = (
         SELECT array_agg(DISTINCT r ORDER BY r)
@@ -1148,7 +1160,16 @@ BEGIN
     PERFORM _check_role_escalation(p_group_id, p_roles);
 
     INSERT INTO @extschema@.invites (group_id, roles, invited_by, expires_at)
-    VALUES (p_group_id, p_roles, _user_id, p_expires_at)
+    VALUES (
+        p_group_id,
+        ARRAY(
+            SELECT DISTINCT r
+            FROM unnest(coalesce(p_roles, '{}'::text[])) AS r
+            ORDER BY 1
+        ),
+        _user_id,
+        p_expires_at
+    )
     RETURNING id INTO _invite_id;
 
     RETURN _invite_id;

@@ -158,7 +158,7 @@ SELECT ok(
 );
 
 -- ── SD-06: anon cannot call rbac._build_user_claims(uuid) ─────────────────────
--- _build_user_claims was revoked from PUBLIC in v5.2.1. Neither anon nor
+-- _build_user_claims is revoked from PUBLIC in v5.0.0. Neither anon nor
 -- authenticated have a re-grant on it.
 SELECT ok(
     NOT has_function_privilege('anon', 'rbac._build_user_claims(uuid)', 'EXECUTE'),

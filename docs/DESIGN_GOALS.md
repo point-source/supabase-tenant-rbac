@@ -454,7 +454,7 @@ The current README contains architectural explanations, full API reference, and 
 | Feature                                            | Status         | Notes                                               |
 | -------------------------------------------------- | -------------- | --------------------------------------------------- |
 | `create_permission()` / `delete_permission()` RPCs | ✅ Implemented | Service_role management of the permissions registry |
-| CI test suite for escalation scenarios             | ✅ Implemented | 18 test files, 112 tests                            |
+| CI test suite for escalation scenarios             | ✅ Implemented | 19 test files, 129 tests                            |
 
 ### v5.x.x: Near-Term Enhancements
 

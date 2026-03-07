@@ -17,7 +17,7 @@ SELECT ok(
 );
 
 -- ── PS-02: authenticated does NOT have EXECUTE on rbac._sync_member_metadata() ─
--- Internal trigger functions are locked down. v5.2.1 revokes EXECUTE from PUBLIC
+-- Internal trigger functions are locked down. v5.0.0 revokes EXECUTE from PUBLIC
 -- and does not re-grant to authenticated for _sync_member_metadata.
 SELECT ok(
     NOT has_function_privilege('authenticated', 'rbac._sync_member_metadata()', 'EXECUTE'),

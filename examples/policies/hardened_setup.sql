@@ -21,7 +21,7 @@
 REVOKE ALL ON rbac.groups             FROM authenticated;
 REVOKE ALL ON rbac.members            FROM authenticated;
 REVOKE ALL ON rbac.invites            FROM authenticated;
--- rbac.roles: no authenticated grant to revoke in v5.2.1+ (revoked by default).
+-- rbac.roles: no authenticated grant to revoke in v5.0.0+ (revoked by default).
 -- If you are on v5.2.0 or earlier, uncomment the line below:
 -- REVOKE ALL ON rbac.roles           FROM authenticated;
 REVOKE ALL ON rbac.member_permissions FROM authenticated;
@@ -37,7 +37,7 @@ REVOKE ALL ON rbac.user_claims        FROM authenticated;
 GRANT SELECT ON rbac.groups  TO authenticated;
 GRANT SELECT ON rbac.members TO authenticated;
 GRANT SELECT ON rbac.invites TO authenticated;
--- rbac.roles: omitted — authenticated has no SELECT by default (v5.2.1+).
+-- rbac.roles: omitted — authenticated has no SELECT by default (v5.0.0+).
 -- Opt-in: GRANT SELECT ON rbac.roles TO authenticated; (plus an RLS policy)
 
 -- member_permissions: SELECT is needed for list_member_permissions() and RLS.
@@ -74,6 +74,6 @@ GRANT SELECT ON rbac.user_claims TO authenticated;
 --
 -- 3. service_role retains ALL on all tables (granted by the extension).
 --
--- 4. _validate_roles() is SECURITY DEFINER (v5.2.1+) — management RPCs
+-- 4. _validate_roles() is SECURITY DEFINER (v5.0.0+) — management RPCs
 --    (add_member, update_member_roles, create_invite) can validate role names
 --    against rbac.roles without the caller needing SELECT on that table.

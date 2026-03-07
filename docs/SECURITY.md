@@ -49,7 +49,7 @@ Privilege escalation prevention is built into the management RPCs. It is not lef
 
 **Affected RPCs:** `add_member()`, `update_member_roles()`
 
-**Check:** Before performing the write, the RPC calls `_validate_grantable_roles()`, which reads the caller's `grantable_roles` from the `user_claims` cache and verifies that every role in the target `p_roles` array is within the caller's grant scope.
+**Check:** Before performing the write, the RPC calls `_check_role_escalation()`, which reads the caller's `grantable_roles` from the `user_claims` cache and verifies that every role in the target `p_roles` array is within the caller's grant scope.
 
 **Example:** An `admin` with `grantable_roles = ['editor', 'viewer']` tries to call `add_member(group_id, user_id, ARRAY['owner'])`. The check reads `'owner'` is not in `['editor', 'viewer']` and raises an error. The INSERT never happens.
 
@@ -108,7 +108,7 @@ The extension minimizes SECURITY DEFINER surface. Only 8 functions are SECURITY 
 | `_on_role_definition_change()` | Trigger function. Must write to `user_claims` for multiple users (all holders of the changed role) without requiring broad grants. | Cannot be called directly via RPC or REST. Only fires as the `on_role_definition_change` trigger on `roles`. Writes only to `user_claims`. |
 | `_validate_roles(p_roles text[])` | INVOKER management RPCs need to validate role names against `rbac.roles`, but `authenticated` has no SELECT on that table by default. | Reads only `roles.name`. No writes. Output is limited to an exception message that names the invalid role — no other data is exposed. Cannot be called with a role that `authenticated` does not know about already (they supplied the role name as a parameter). |
 | `_validate_permissions(p_permissions text[])` | INVOKER management RPCs need to validate permission names against `rbac.permissions`, but `authenticated` has no SELECT on that table by default. | Reads only `permissions.name`. No writes. Same information-exposure rationale as `_validate_roles`. |
-| `_validate_grantable_roles(p_group_id, p_roles)` | INVOKER management RPCs need to check the caller's cached `grantable_roles` and validate the target roles fall within scope. | Reads `user_claims` for `auth.uid()` (the caller's own row). Validates target roles against `grantable_roles` from that row. No writes. Cannot read another user's claims. |
+| `_validate_grantable_roles(p_roles text[])` | INVOKER role-management RPCs need to validate that role names listed in `grantable_roles` exist in `rbac.roles` (or are `'*'`). | Reads only `roles.name`. No writes. Does not enforce caller grant scope. |
 
 ---
 

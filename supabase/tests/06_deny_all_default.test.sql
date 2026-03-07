@@ -84,7 +84,7 @@ SELECT is(
 RESET ROLE;
 
 -- ── DA-05: authenticated does NOT have table-level SELECT on rbac.roles ────────
--- v5.2.1 removed SELECT grant from authenticated on rbac.roles.
+-- v5.0.0 removes SELECT grant from authenticated on rbac.roles.
 SELECT ok(
     NOT has_table_privilege('authenticated', 'rbac.roles', 'SELECT'),
     'DA-05: authenticated does not have table-level SELECT privilege on rbac.roles'
@@ -100,7 +100,7 @@ SELECT ok(
 );
 
 -- ── DA-07: authenticated does NOT have INSERT or UPDATE on rbac.user_claims ────
--- v5.2.1 reduced user_claims grants to SELECT-only for authenticated.
+-- v5.0.0 grants SELECT-only on user_claims for authenticated.
 -- Trigger functions (SECURITY DEFINER) handle all writes.
 SELECT ok(
     NOT has_table_privilege('authenticated', 'rbac.user_claims', 'INSERT')

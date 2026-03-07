@@ -4,7 +4,7 @@
 -- cleanup, and bulk claims rebuild when a role's permissions change.
 
 BEGIN;
-SELECT plan(9);
+SELECT plan(11);
 
 -- Setup: users and groups
 INSERT INTO auth.users (
@@ -248,6 +248,52 @@ SELECT ok(
      FROM rbac.user_claims
      WHERE user_id = '33000000-0000-0000-0000-000000000006'::uuid),
     'EC-08: changing role permissions triggers bulk rebuild for all members holding that role'
+);
+
+-- ── EC-09: update_member_roles() normalizes role arrays (dedupe + sort) ───────
+SELECT rbac.update_member_roles(
+    '33000000-0000-0000-0000-000000000004'::uuid,
+    '33000000-0000-0000-0000-000000000002'::uuid,
+    ARRAY['viewer', 'editor', 'viewer']
+);
+
+SELECT is(
+    (SELECT roles FROM rbac.members
+     WHERE group_id = '33000000-0000-0000-0000-000000000004'::uuid
+       AND user_id  = '33000000-0000-0000-0000-000000000002'::uuid),
+    ARRAY['editor', 'viewer']::text[],
+    'EC-09: update_member_roles() deduplicates and sorts assigned roles'
+);
+
+-- ── EC-10: accept_invite() normalizes invite roles for new memberships ─────────
+INSERT INTO rbac.invites (id, group_id, roles, invited_by)
+VALUES (
+    '33000000-0000-0000-0000-000000000008'::uuid,
+    '33000000-0000-0000-0000-000000000003'::uuid,
+    ARRAY['viewer', 'viewer', 'editor'],
+    '33000000-0000-0000-0000-000000000001'::uuid
+);
+
+DO $$
+BEGIN
+    PERFORM set_config('request.jwt.claims',
+        '{"role":"authenticated","sub":"33000000-0000-0000-0000-000000000005","exp":9999999999}',
+        true);
+    PERFORM set_config('request.groups',
+        (SELECT claims::text FROM rbac.user_claims
+         WHERE user_id = '33000000-0000-0000-0000-000000000005'::uuid),
+        true);
+    SET LOCAL ROLE authenticated;
+    PERFORM rbac.accept_invite('33000000-0000-0000-0000-000000000008'::uuid);
+    RESET ROLE;
+END$$;
+
+SELECT is(
+    (SELECT roles FROM rbac.members
+     WHERE group_id = '33000000-0000-0000-0000-000000000003'::uuid
+       AND user_id  = '33000000-0000-0000-0000-000000000005'::uuid),
+    ARRAY['ec08-role', 'editor', 'viewer']::text[],
+    'EC-10: accept_invite() merges normalized invite roles without duplicates'
 );
 
 SELECT * FROM finish();

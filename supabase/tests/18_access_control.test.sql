@@ -1,4 +1,4 @@
--- EXECUTE grant verification for the v5.2.1 extension surface.
+-- EXECUTE grant verification for the v5.0.0 extension surface.
 -- Verifies: authenticated can call management RPCs, cannot call service_role-only
 -- RPCs, cannot call internal helpers. Anon cannot call management RPCs.
 -- Complements 12_access_control.test.sql and 26_negative_execute_grants.test.sql.
