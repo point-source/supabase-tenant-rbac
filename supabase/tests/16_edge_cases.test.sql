@@ -1,4 +1,4 @@
--- Tests for EC-01 through EC-08: edge cases and boundary conditions.
+-- Tests for EC-01 through EC-10: edge cases and boundary conditions.
 -- Covers empty-roles membership, deduplication in add_member(), empty claims
 -- after removing all memberships, multi-group claims, cascading permission
 -- cleanup, and bulk claims rebuild when a role's permissions change.
