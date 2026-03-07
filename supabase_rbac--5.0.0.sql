@@ -106,7 +106,7 @@ ALTER TABLE @extschema@.members
 
 CREATE INDEX members_user_id_idx ON @extschema@.members USING btree (user_id);
 
--- GIN index for efficient role-membership lookups (WHERE name = ANY(m.roles)).
+-- GIN index for efficient role-membership lookups (WHERE roles @> ARRAY[name]).
 -- Critical for _on_role_definition_change() and delete_role() on large member tables.
 CREATE INDEX members_roles_gin_idx ON @extschema@.members USING gin (roles);
 
@@ -621,10 +621,10 @@ BEGIN
     FROM (
         SELECT DISTINCT m.user_id
         FROM @extschema@.members m
-        WHERE NEW.name = ANY(m.roles)              -- direct holders of changed role
+        WHERE m.roles @> ARRAY[NEW.name]           -- direct holders of changed role
            OR EXISTS (
                SELECT 1 FROM @extschema@.roles r2
-               WHERE r2.name = ANY(m.roles)
+               WHERE m.roles @> ARRAY[r2.name]
                  AND NEW.name = ANY(r2.grantable_roles)
            )                                       -- indirect: holds a role whose grantable_roles lists the changed role
     ) u
@@ -1335,7 +1335,7 @@ AS $function$
 BEGIN
     -- Check if any member has this role
     IF EXISTS (
-        SELECT 1 FROM @extschema@.members WHERE p_name = ANY(roles)
+        SELECT 1 FROM @extschema@.members WHERE roles @> ARRAY[p_name]
     ) THEN
         RAISE EXCEPTION 'Role "%" is in use by one or more members', p_name
             USING HINT = 'Remove this role from all members before deleting it';
