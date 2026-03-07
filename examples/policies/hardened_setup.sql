@@ -21,9 +21,7 @@
 REVOKE ALL ON rbac.groups             FROM authenticated;
 REVOKE ALL ON rbac.members            FROM authenticated;
 REVOKE ALL ON rbac.invites            FROM authenticated;
--- rbac.roles: no authenticated grant to revoke in v5.0.0+ (revoked by default).
--- If you are on v5.2.0 or earlier, uncomment the line below:
--- REVOKE ALL ON rbac.roles           FROM authenticated;
+-- rbac.roles: no authenticated grant to revoke in v5.0.0 (revoked by default).
 REVOKE ALL ON rbac.member_permissions FROM authenticated;
 -- rbac.user_claims: authenticated only has SELECT (for Storage RLS fallback).
 -- Revoking it will break Storage RLS policies that use has_role/has_permission.

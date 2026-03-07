@@ -3,7 +3,7 @@
 -- The most common use case: you have an application table with a group_id
 -- column and want to restrict access based on group membership or specific roles.
 --
--- Assumes the extension is installed in the 'rbac' schema with public wrappers.
+-- Assumes the extension is installed in the 'rbac' schema.
 
 -- ──────────────────────────────────────────────────────────────────────────────
 -- Table definition
@@ -32,7 +32,7 @@ on "public"."projects"
 as permissive
 for select
 to authenticated
-using (is_member(group_id));
+using (rbac.is_member(group_id));
 
 -- has_any_role() replaces two separate has_role() calls with OR.
 create policy "Admins can write projects"
@@ -40,22 +40,22 @@ on "public"."projects"
 as permissive
 for insert
 to authenticated
-with check (has_any_role(group_id, ARRAY['owner', 'admin']));
+with check (rbac.has_any_role(group_id, ARRAY['owner', 'admin']));
 
 create policy "Admins can update projects"
 on "public"."projects"
 as permissive
 for update
 to authenticated
-using (has_any_role(group_id, ARRAY['owner', 'admin']))
-with check (has_any_role(group_id, ARRAY['owner', 'admin']));
+using (rbac.has_any_role(group_id, ARRAY['owner', 'admin']))
+with check (rbac.has_any_role(group_id, ARRAY['owner', 'admin']));
 
 create policy "Owners can delete projects"
 on "public"."projects"
 as permissive
 for delete
 to authenticated
-using (has_role(group_id, 'owner'));
+using (rbac.has_role(group_id, 'owner'));
 
 -- ──────────────────────────────────────────────────────────────────────────────
 -- Option B: Permission-centric policies
@@ -71,26 +71,26 @@ on "public"."projects"
 as permissive
 for select
 to authenticated
-using (has_permission(group_id, 'project.read'));
+using (rbac.has_permission(group_id, 'project.read'));
 
 create policy "Has project write permission (insert)"
 on "public"."projects"
 as permissive
 for insert
 to authenticated
-with check (has_permission(group_id, 'project.write'));
+with check (rbac.has_permission(group_id, 'project.write'));
 
 create policy "Has project write permission (update)"
 on "public"."projects"
 as permissive
 for update
 to authenticated
-using (has_permission(group_id, 'project.write'))
-with check (has_permission(group_id, 'project.write'));
+using (rbac.has_permission(group_id, 'project.write'))
+with check (rbac.has_permission(group_id, 'project.write'));
 
 create policy "Has project delete permission"
 on "public"."projects"
 as permissive
 for delete
 to authenticated
-using (has_permission(group_id, 'project.delete'));
+using (rbac.has_permission(group_id, 'project.delete'));

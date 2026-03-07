@@ -1,8 +1,8 @@
 -- Storage RLS Policy Examples
 --
--- get_claims() falls back to a SECURITY DEFINER helper that reads auth.users
--- directly instead of relying on potentially stale JWT claims. This means
--- has_role() and is_member() work correctly in Supabase Storage RLS policies —
+-- get_claims() falls back to reading rbac.user_claims directly instead of
+-- relying on request.groups (which is only set by db_pre_request). This means
+-- rbac.has_role() and rbac.is_member() work correctly in Supabase Storage RLS policies —
 -- role changes take effect immediately without waiting for JWT refresh.
 --
 -- Two patterns are shown below depending on how the group_id is associated with
@@ -20,7 +20,7 @@ FOR SELECT
 TO authenticated
 USING (
     bucket_id = 'group-files'
-    AND is_member((string_to_array(name, '/'))[1]::uuid)
+    AND rbac.is_member((string_to_array(name, '/'))[1]::uuid)
 );
 
 CREATE POLICY "Uploaders can insert objects"
@@ -29,7 +29,7 @@ FOR INSERT
 TO authenticated
 WITH CHECK (
     bucket_id = 'group-files'
-    AND has_role((string_to_array(name, '/'))[1]::uuid, 'uploader')
+    AND rbac.has_role((string_to_array(name, '/'))[1]::uuid, 'uploader')
 );
 
 CREATE POLICY "Uploaders can update objects"
@@ -38,11 +38,11 @@ FOR UPDATE
 TO authenticated
 USING (
     bucket_id = 'group-files'
-    AND has_role((string_to_array(name, '/'))[1]::uuid, 'uploader')
+    AND rbac.has_role((string_to_array(name, '/'))[1]::uuid, 'uploader')
 )
 WITH CHECK (
     bucket_id = 'group-files'
-    AND has_role((string_to_array(name, '/'))[1]::uuid, 'uploader')
+    AND rbac.has_role((string_to_array(name, '/'))[1]::uuid, 'uploader')
 );
 
 CREATE POLICY "Admins can delete objects"
@@ -51,7 +51,7 @@ FOR DELETE
 TO authenticated
 USING (
     bucket_id = 'group-files'
-    AND has_role((string_to_array(name, '/'))[1]::uuid, 'admin')
+    AND rbac.has_role((string_to_array(name, '/'))[1]::uuid, 'admin')
 );
 
 -- ============================================================
@@ -64,7 +64,7 @@ FOR SELECT
 TO authenticated
 USING (
     bucket_id = 'group-assets'
-    AND is_member((metadata->>'group_id')::uuid)
+    AND rbac.is_member((metadata->>'group_id')::uuid)
 );
 
 CREATE POLICY "Editors can insert tagged objects"
@@ -73,7 +73,7 @@ FOR INSERT
 TO authenticated
 WITH CHECK (
     bucket_id = 'group-assets'
-    AND has_role((metadata->>'group_id')::uuid, 'editor')
+    AND rbac.has_role((metadata->>'group_id')::uuid, 'editor')
 );
 
 CREATE POLICY "Editors can update tagged objects"
@@ -82,11 +82,11 @@ FOR UPDATE
 TO authenticated
 USING (
     bucket_id = 'group-assets'
-    AND has_role((metadata->>'group_id')::uuid, 'editor')
+    AND rbac.has_role((metadata->>'group_id')::uuid, 'editor')
 )
 WITH CHECK (
     bucket_id = 'group-assets'
-    AND has_role((metadata->>'group_id')::uuid, 'editor')
+    AND rbac.has_role((metadata->>'group_id')::uuid, 'editor')
 );
 
 CREATE POLICY "Admins can delete tagged objects"
@@ -95,5 +95,5 @@ FOR DELETE
 TO authenticated
 USING (
     bucket_id = 'group-assets'
-    AND has_role((metadata->>'group_id')::uuid, 'admin')
+    AND rbac.has_role((metadata->>'group_id')::uuid, 'admin')
 );

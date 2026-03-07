@@ -19,14 +19,10 @@ examples/
     custom_table_isolation.sql # RLS for custom app tables with group_id FK
     hardened_setup.sql         # REVOKE ALL + targeted GRANT defense-in-depth
   triggers/
-    auto_group_owner.sql       # Auto-assign owner on group create (superseded by create_group RPC)
-    auto_group_permissions.sql # Auto-assign permissions on group create (superseded by create_group RPC)
     sync_user_into_group_role.sql  # Keep user email/name synced into members.metadata
     on_delete_user_roles.sql   # Cascade deletes via user_roles view
   views/
     user_roles.sql             # Flattened view: one row per user-group-role
-  functions/
-    add_user_by_email.sql      # Add user by email (superseded by add_member RPC)
   setup/
     create_public_wrappers.sql # Opt-in: create public.* wrappers for PostgREST discovery
     remove_public_wrappers.sql # Drop previously created public.* wrappers
