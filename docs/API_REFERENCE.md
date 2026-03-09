@@ -258,6 +258,8 @@ CREATE POLICY "can download" ON public.exports
 
 ## Group Management
 
+All group management RPCs are granted to `authenticated` and `service_role`. When called as `service_role`, RLS and escalation checks are bypassed.
+
 ---
 
 ### `create_group(p_name, p_metadata, p_creator_roles)`
@@ -266,7 +268,7 @@ CREATE POLICY "can download" ON public.exports
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Creates a new group and adds the calling user as a member with the specified roles. Returns the new group's UUID.
 
@@ -302,7 +304,7 @@ SELECT rbac.create_group(
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Deletes a group. All members, invites, and member_permissions for this group are deleted via CASCADE. Requires an RLS DELETE policy on `rbac.groups` permitting the caller.
 
@@ -322,6 +324,8 @@ SELECT rbac.delete_group('c2aa61f5-d86b-45e8-9e6d-a5bae98cd530');
 
 ## Member Management
 
+All member management RPCs are granted to `authenticated` and `service_role`. When called as `service_role`, RLS and escalation checks are bypassed.
+
 ---
 
 ### `add_member(p_group_id, p_user_id, p_roles)`
@@ -330,7 +334,7 @@ SELECT rbac.delete_group('c2aa61f5-d86b-45e8-9e6d-a5bae98cd530');
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Adds a user to a group with the specified roles. If the user is already a member, merges the new roles into their existing roles array (no duplicates). Returns the member row UUID.
 
@@ -362,7 +366,7 @@ SELECT rbac.add_member(
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Removes a user from a group. All `member_permissions` for this user in this group are also deleted via CASCADE. Requires an RLS DELETE policy on `rbac.members` permitting the caller.
 
@@ -390,7 +394,7 @@ SELECT rbac.remove_member(
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Replaces a member's roles array entirely with the specified array. To add roles without removing existing ones, use `add_member()` instead. Requires an RLS UPDATE policy on `rbac.members` permitting the caller.
 
@@ -421,7 +425,7 @@ SELECT rbac.update_member_roles(
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Returns all members of a group. Requires an RLS SELECT policy on `rbac.members` permitting the caller.
 
@@ -441,6 +445,8 @@ SELECT * FROM rbac.list_members('c2aa61f5-d86b-45e8-9e6d-a5bae98cd530');
 
 ## Invite System
 
+All invite RPCs are granted to `authenticated` and `service_role`. When called as `service_role`, RLS and escalation checks are bypassed.
+
 ---
 
 ### `create_invite(p_group_id, p_roles, p_expires_at)`
@@ -449,7 +455,7 @@ SELECT * FROM rbac.list_members('c2aa61f5-d86b-45e8-9e6d-a5bae98cd530');
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Creates an invite for a group with the specified roles. The invite's `invited_by` is set to `auth.uid()`. Returns the invite UUID (which serves as the invite code).
 
@@ -484,7 +490,7 @@ SELECT rbac.create_invite(
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Deletes an invite. Raises if the invite is not found or RLS prevents the delete. Requires an RLS DELETE policy on `rbac.invites` permitting the caller.
 
@@ -508,7 +514,7 @@ SELECT rbac.delete_invite('9a8b7c6d-5e4f-3a2b-1c0d-e9f8a7b6c5d4');
 
 **INVOKER/DEFINER:** DEFINER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Accepts an invite. Validates the invite is not expired and not already accepted. Atomically marks the invite as used and upserts the calling user into the group with the invite's roles.
 
@@ -542,7 +548,7 @@ curl --request POST \
 
 ## Permission Overrides
 
-Direct per-member permission grants that do not require role assignment.
+Direct per-member permission grants that do not require role assignment. All permission override RPCs are granted to `authenticated` and `service_role`. When called as `service_role`, RLS and escalation checks are bypassed.
 
 ---
 
@@ -552,7 +558,7 @@ Direct per-member permission grants that do not require role assignment.
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Grants a direct permission override to a specific member. Idempotent — calling again with the same arguments is a no-op. The override merges into the member's cached permissions immediately via trigger.
 
@@ -587,7 +593,7 @@ SELECT rbac.grant_member_permission(
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Removes a direct permission override from a specific member. Raises if the override does not exist. Claims are updated immediately via trigger.
 
@@ -619,7 +625,7 @@ SELECT rbac.revoke_member_permission(
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticated`
+**Required role:** `authenticated`, `service_role`
 
 **Description:** Returns direct permission overrides for a group. Pass `p_user_id` to filter to a specific member, or omit to return all overrides in the group. Requires an RLS SELECT policy on `rbac.member_permissions` permitting the caller.
 
@@ -950,7 +956,7 @@ SELECT * FROM rbac.list_permissions();
 
 **INVOKER/DEFINER:** INVOKER
 
-**Required role:** `authenticator` (called by PostgREST, not directly by application code)
+**Required role:** `authenticator`, `service_role` (called by PostgREST, not directly by application code)
 
 **Description:** PostgREST pre-request hook. Reads the current user's claims from `rbac.user_claims` and writes them to the `request.groups` session variable. All RLS helper functions read from this session variable.
 

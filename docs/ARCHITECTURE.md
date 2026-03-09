@@ -137,7 +137,7 @@ The claims cache. One row per user. Never written to directly — maintained exc
 }
 ```
 
-RLS: enabled. `authenticated` has SELECT on own row only. `authenticator` has SELECT (for `db_pre_request`). `supabase_auth_admin` has SELECT (for auth hook). `service_role` has ALL. No INSERT or UPDATE for `authenticated` — writes are exclusively via DEFINER trigger functions.
+RLS: enabled. `authenticated` has SELECT on own row only. `authenticator` and `service_role` have SELECT (for `db_pre_request`). `supabase_auth_admin` has SELECT (for auth hook). No INSERT or UPDATE for `authenticated` — writes are exclusively via DEFINER trigger functions.
 
 ---
 
@@ -471,4 +471,9 @@ All other internal helper functions (`_build_user_claims`, `_get_user_groups`, `
 All `_`-prefixed functions have `REVOKE EXECUTE FROM PUBLIC`. Selective re-grants:
 - `_get_user_groups`: re-granted to `authenticated, service_role` (called by `get_claims()` Storage fallback)
 - `_jwt_is_expired`: re-granted to `authenticated, anon, service_role` (called by all RLS helpers)
-- `_build_user_claims`, `_on_group_created`, `_validate_roles`, `_validate_permissions`, `_validate_grantable_roles`, `_set_updated_at`: no re-grant (DEFINER callers or trigger mechanism only)
+- `_check_role_escalation`: re-granted to `authenticated, service_role` (called by management RPCs)
+- `_check_permission_escalation`: re-granted to `authenticated, service_role` (called by management RPCs)
+- `_validate_roles`: re-granted to `authenticated, service_role` (called by management RPCs)
+- `_validate_permissions`: re-granted to `authenticated, service_role` (called by management RPCs)
+- `_validate_grantable_roles`: re-granted to `authenticated, service_role` (called by role-management RPCs)
+- `_build_user_claims`, `_on_group_created`, `_set_updated_at`: no re-grant (DEFINER callers or trigger mechanism only)

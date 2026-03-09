@@ -108,16 +108,16 @@ AND table_name IN ('groups', 'group_users', 'group_invites');
 -- Should return 0 rows
 ```
 
-### Step 4: Install v5.0.0
+### Step 4: Install v5.x
 
 ```sql
 -- Install dbdev if not already installed
 SELECT dbdev.install('pointsource-supabase_rbac');
 
--- Create extension in private schema
+-- Create extension in private schema (use the latest 5.x version)
 CREATE EXTENSION "pointsource-supabase_rbac"
     SCHEMA rbac
-    VERSION '5.0.0';
+    VERSION '5.1.0';
 ```
 
 ### Step 5: Register Permissions and Define Roles

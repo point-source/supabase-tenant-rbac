@@ -2,12 +2,12 @@
 
 ## What This Project Is
 
-A PostgreSQL TLE (Trusted Language Extension) that provides multi-tenant RBAC for Supabase projects. Distributed via [database.dev](https://database.dev/pointsource/supabase_rbac) as `pointsource-supabase_rbac`. Current version: **5.0.0**.
+A PostgreSQL TLE (Trusted Language Extension) that provides multi-tenant RBAC for Supabase projects. Distributed via [database.dev](https://database.dev/pointsource/supabase_rbac) as `pointsource-supabase_rbac`. Current version: **5.1.0**.
 
 ## Repository Layout
 
 ```
-supabase_rbac--5.0.0.sql       # Current extension full install script (READ THIS FIRST)
+supabase_rbac--5.1.0.sql       # Current extension full install script (READ THIS FIRST)
 supabase_rbac--X.Y.Z.sql       # Prior version install scripts (keep for reference)
 supabase_rbac.control          # Extension metadata (default_version lives here)
 CHANGELOG.md                   # Version history
@@ -24,8 +24,9 @@ examples/
   views/
     user_roles.sql             # Flattened view: one row per user-group-role
   setup/
-    create_public_wrappers.sql # Opt-in: create public.* wrappers for PostgREST discovery
-    remove_public_wrappers.sql # Drop previously created public.* wrappers
+    create_public_wrappers.sql      # Opt-in: create public.* wrappers for PostgREST discovery
+    remove_public_wrappers.sql      # Drop previously created public.* wrappers
+    create_service_role_wrapper.sql # Opt-in: public.add_member for service_role only
 
 supabase/
   config.toml                  # Local dev config (Postgres 15, port 54321)
@@ -35,7 +36,8 @@ supabase/
     20240502214829_add_dummy_data.sql     # Test sensitive_data table
     20240512101038_add_rls_policies.sql   # RLS on rbac tables + sensitive_data
   seed.sql                     # 2 test users, 3 groups, role definitions, member assignments
-  functions/invite/index.ts    # Deno edge function for invite acceptance
+  functions/invite/index.ts       # Deno edge function for invite acceptance
+  functions/add-member/index.ts  # Deno edge function for service_role add_member
 
 docs/
   CONCEPTUAL_MODEL.md          # Three-tier model, entities, escalation prevention
@@ -88,7 +90,7 @@ supabase test db
 
 When making changes to the core extension:
 
-1. Edit `supabase_rbac--5.0.0.sql` (or create a new version file)
+1. Edit `supabase_rbac--5.1.0.sql` (or create a new version file)
 2. **CRITICAL: Run `tools/generate_migration.sh` immediately after any edit** — the install migration embeds the full extension SQL. Without regeneration, `supabase db reset` uses stale code.
 3. Create `supabase_rbac--<old>--<new>.sql` — upgrade path (ALTER/REPLACE only changed objects)
 4. Update `default_version` in `supabase_rbac.control`
@@ -133,7 +135,7 @@ When making changes to the core extension:
 - `has_all_permissions(group_id uuid, permissions text[])` → boolean
 - `get_claims()` → jsonb
 
-### Management RPCs
+### Management RPCs (authenticated + service_role)
 - `create_group(p_name text, p_metadata jsonb, p_creator_roles text[])` → uuid [INVOKER]
 - `delete_group(p_group_id uuid)` [INVOKER]
 - `add_member(p_group_id uuid, p_user_id uuid, p_roles text[])` → uuid [INVOKER]
@@ -225,6 +227,9 @@ RLS policies call:
 - **Storage requests bypass db_pre_request**: `get_claims()` falls back to `_get_user_groups()` which reads `rbac.user_claims` directly, so Storage RLS still works.
 - **user_claims is auto-managed**: Never write to `rbac.user_claims` directly. Three triggers keep it in sync: `on_change_sync_member_metadata` (membership changes), `on_role_definition_change` (role permissions/grantable_roles changes), and `on_member_permission_change` (direct permission overrides). The table has RLS enabled (deny-all except for the defined roles).
 - **member_permissions is auto-managed by trigger**: Grant/revoke via `grant_member_permission()` and `revoke_member_permission()` RPCs (or direct INSERT/DELETE if RLS allows). The FK to `members(group_id, user_id)` ensures overrides are automatically cleaned up when a member is removed.
-- **Escalation checks are built-in**: `add_member`, `update_member_roles`, `create_invite`, `grant_member_permission`, and `revoke_member_permission` all check the caller's cached `grantable_roles`/`grantable_permissions` before proceeding. A member cannot assign a role or grant a permission outside their authorized scope.
+- **Escalation checks are built-in**: `add_member`, `update_member_roles`, `create_invite`, `grant_member_permission`, and `revoke_member_permission` all check the caller's cached `grantable_roles`/`grantable_permissions` before proceeding. A member cannot assign a role or grant a permission outside their authorized scope. Escalation checks are bypassed for `service_role` (it is a trusted admin context).
+- **Management RPCs are callable by service_role**: All management RPCs (`create_group`, `add_member`, etc.) are granted to both `authenticated` and `service_role`. This enables edge functions and server-side code to manage membership using the service_role key. A public wrapper is still needed for PostgREST discovery (see `examples/setup/create_service_role_wrapper.sql`).
 - **Role/permission management is service_role only**: `create_role`, `delete_role`, `list_roles`, `set_role_permissions`, `grant_permission`, `revoke_permission`, `list_role_permissions`, `set_role_grantable_roles`, `create_permission`, `delete_permission`, `list_permissions` are app-author operations intended for migrations/admin tooling. Not exposed via public wrappers.
+- **PostgREST schema routing**: `rbac` is not in PostgREST's default `schemas` list. `supabase.rpc("add_member")` returns 404 unless you install a public wrapper or add `rbac` to the `schemas` config. See `examples/setup/create_public_wrappers.sql` or `create_service_role_wrapper.sql`.
+- **Supabase default privileges gotcha**: Functions created in `public` by `postgres` auto-grant EXECUTE to `anon`, `authenticated`, and `service_role`. `REVOKE FROM PUBLIC` alone does NOT undo these. You must explicitly `REVOKE FROM anon, authenticated` to restrict a public wrapper to service_role only.
 - **TLE backup/restore**: Supabase logical backups may fail to restore if `auth.users` isn't available. See [Issue #41](https://github.com/point-source/supabase-tenant-rbac/issues/41).

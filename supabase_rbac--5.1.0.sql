@@ -1,11 +1,3 @@
-CREATE SCHEMA IF NOT EXISTS rbac;
-
-SELECT
-  pgtle.install_extension (
-    'pointsource-supabase_rbac',
-    '5.1.0',
-    'Supabase Multi-Tenant Role-based Access Control',
-    $_pgtle_$
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- supabase_rbac v5.0.0 — Multi-Tenant RBAC for Supabase
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -1741,7 +1733,3 @@ NOTIFY pgrst, 'reload config';
 -- To remove previously created wrappers, see:
 --   examples/setup/remove_public_wrappers.sql
 -- ═══════════════════════════════════════════════════════════════════════════════
-$_pgtle_$
-  );
-
-CREATE EXTENSION "pointsource-supabase_rbac" SCHEMA rbac VERSION '5.1.0';

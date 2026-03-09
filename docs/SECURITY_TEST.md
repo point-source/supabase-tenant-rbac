@@ -287,11 +287,11 @@ Each test is written as:
 - When: `alice` (authenticated) attempts SELECT, INSERT, UPDATE, DELETE on `rbac.user_claims`
 - Then: DENY on all operations
 
-**DA-08: create_group works despite deny-all (SECURITY DEFINER bypass)**
+**DA-08: create_group works despite deny-all (trigger-assisted INVOKER flow)**
 
-- Given: fresh installation, no RLS policies added
+- Given: fresh installation, INSERT policy on `rbac.groups` added
 - When: `alice` (authenticated) calls `create_group('Test Group')`
-- Then: ALLOW — `create_group` is SECURITY DEFINER and bypasses RLS for the INSERT
+- Then: ALLOW — `create_group` is SECURITY INVOKER (requires INSERT policy on `rbac.groups`); the AFTER INSERT trigger `_on_group_created` (SECURITY DEFINER) bootstraps the creator's membership row
 
 ---
 

@@ -378,11 +378,11 @@ For users who prefer direct SQL, the versioned `.sql` files in the repository se
 
 ### Upgrade Path from v4.x
 
-There is no automated upgrade path from v4.x to v5.0.0. The changes are too extensive. Migration requires:
+There is no automated upgrade path from v4.x to v5.x. The changes are too extensive. Migration requires:
 
 1. Exporting group/membership data from v4.x tables
 2. Dropping the v4.x extension
-3. Installing v5.0.0
+3. Installing v5.x (latest version)
 4. Re-importing data into the new schema
 5. Rewriting RLS policies to use new function names
 
