@@ -4,13 +4,13 @@ const BASE_URL = "http://localhost/functions/v1/add-member";
 
 function makeHandler(
   rpcOverride?: AddMemberRpc,
-  authorizeOverride?: (req: Request) => boolean,
+  authorizeOverride?: (req: Request) => boolean | Promise<boolean>,
 ) {
   return createAddMemberHandler({
     supabaseUrl: "http://localhost:54321",
     serviceRoleKey: "service-role-key",
     addMemberRpc: rpcOverride ?? (async () => ({ data: "new-member-uuid", error: null })),
-    authorizeRequest: authorizeOverride,
+    authorizeRequest: authorizeOverride ?? (() => true),
   });
 }
 
@@ -47,6 +47,98 @@ Deno.test("returns 405 for non-POST methods", async () => {
 Deno.test("returns 401 when authorizeRequest returns false", async () => {
   const handler = makeHandler(undefined, () => false);
   const res = await handler(post({ group_id: "g", user_id: "u", roles: ["r"] }));
+  if (res.status !== 401) throw new Error(`Expected 401, got ${res.status}`);
+});
+
+Deno.test("returns 401 by default when bearer token is missing", async () => {
+  const handler = createAddMemberHandler({
+    supabaseUrl: "http://localhost:54321",
+    serviceRoleKey: "service-role-key",
+    addMemberRpc: async () => ({ data: "new-member-uuid", error: null }),
+    getUserByToken: async () => ({
+      user: { app_metadata: { roles: ["rbac_admin"] } },
+      error: null,
+    }),
+  });
+  const res = await handler(post({ group_id: "g", user_id: "u", roles: ["r"] }));
+  if (res.status !== 401) throw new Error(`Expected 401, got ${res.status}`);
+});
+
+Deno.test("default auth allows super admin user", async () => {
+  const handler = createAddMemberHandler({
+    supabaseUrl: "http://localhost:54321",
+    serviceRoleKey: "service-role-key",
+    addMemberRpc: async () => ({ data: "new-member-uuid", error: null }),
+    getUserByToken: async () => ({
+      user: { app_metadata: { is_super_admin: true } },
+      error: null,
+    }),
+  });
+  const res = await handler(
+    post(
+      { group_id: "g", user_id: "u", roles: ["r"] },
+      { Authorization: "Bearer token-123" },
+    ),
+  );
+  if (res.status !== 201) throw new Error(`Expected 201, got ${res.status}`);
+});
+
+Deno.test("default auth allows configured app role", async () => {
+  const handler = createAddMemberHandler({
+    supabaseUrl: "http://localhost:54321",
+    serviceRoleKey: "service-role-key",
+    addMemberRpc: async () => ({ data: "new-member-uuid", error: null }),
+    allowedAppRoles: ["tenant_admin", "rbac_admin"],
+    getUserByToken: async () => ({
+      user: { app_metadata: { roles: ["viewer", "tenant_admin"] } },
+      error: null,
+    }),
+  });
+  const res = await handler(
+    post(
+      { group_id: "g", user_id: "u", roles: ["r"] },
+      { Authorization: "Bearer token-123" },
+    ),
+  );
+  if (res.status !== 201) throw new Error(`Expected 201, got ${res.status}`);
+});
+
+Deno.test("default auth denies app role when allowed roles are not configured", async () => {
+  const handler = createAddMemberHandler({
+    supabaseUrl: "http://localhost:54321",
+    serviceRoleKey: "service-role-key",
+    addMemberRpc: async () => ({ data: "new-member-uuid", error: null }),
+    getUserByToken: async () => ({
+      user: { app_metadata: { roles: ["rbac_admin"] } },
+      error: null,
+    }),
+  });
+  const res = await handler(
+    post(
+      { group_id: "g", user_id: "u", roles: ["r"] },
+      { Authorization: "Bearer token-123" },
+    ),
+  );
+  if (res.status !== 401) throw new Error(`Expected 401, got ${res.status}`);
+});
+
+Deno.test("default auth denies user without admin role", async () => {
+  const handler = createAddMemberHandler({
+    supabaseUrl: "http://localhost:54321",
+    serviceRoleKey: "service-role-key",
+    addMemberRpc: async () => ({ data: "new-member-uuid", error: null }),
+    allowedAppRoles: ["tenant_admin"],
+    getUserByToken: async () => ({
+      user: { app_metadata: { roles: ["viewer"] } },
+      error: null,
+    }),
+  });
+  const res = await handler(
+    post(
+      { group_id: "g", user_id: "u", roles: ["r"] },
+      { Authorization: "Bearer token-123" },
+    ),
+  );
   if (res.status !== 401) throw new Error(`Expected 401, got ${res.status}`);
 });
 
@@ -172,13 +264,22 @@ Deno.test("returns 400 with error message when RPC fails", async () => {
 
 Deno.test("returns application/json content-type on error", async () => {
   const handler = makeHandler(
-    async () => ({ data: null, error: { message: "fail" } }),
+    async () => ({ data: null, error: { message: "fail", code: "XX000" } }),
   );
   const res = await handler(
     post({ group_id: "g", user_id: "u", roles: ["r"] }),
   );
+  if (res.status !== 500) throw new Error(`Expected 500, got ${res.status}`);
   const ct = res.headers.get("Content-Type");
   if (ct !== "application/json") {
     throw new Error(`Expected application/json, got ${ct}`);
   }
+});
+
+Deno.test("maps permission errors to 403", async () => {
+  const handler = makeHandler(
+    async () => ({ data: null, error: { message: "permission denied", code: "42501" } }),
+  );
+  const res = await handler(post({ group_id: "g", user_id: "u", roles: ["r"] }));
+  if (res.status !== 403) throw new Error(`Expected 403, got ${res.status}`);
 });

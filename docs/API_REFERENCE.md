@@ -535,14 +535,7 @@ Uses `FOR UPDATE` row lock to prevent concurrent acceptance races.
 SELECT rbac.accept_invite('9a8b7c6d-5e4f-3a2b-1c0d-e9f8a7b6c5d4');
 ```
 
-The edge function at `supabase/functions/invite/index.ts` accepts HTTP POST requests:
-```bash
-curl --request POST \
-  'https://<project>.supabase.co/functions/v1/invite' \
-  --header 'Content-Type: application/json' \
-  --data '{"invite_code":"<invite-id>"}' \
-  --header 'Authorization: Bearer <user-jwt>'
-```
+For the optional HTTP wrapper example, see `invite` under [Optional Edge Function Examples](#optional-edge-function-examples).
 
 ---
 
@@ -971,6 +964,39 @@ Do not call this function directly. It is invoked once per PostgREST request bef
 **Returns:** void
 
 **Escalation check:** No.
+
+---
+
+## Optional Edge Function Examples
+
+The repository includes optional edge function examples under `supabase/functions/`. These are not required to use the extension's SQL API.
+
+### `invite` example (`supabase/functions/invite/index.ts`)
+
+- Purpose: demonstrate HTTP-based invite acceptance using `rbac.accept_invite(...)`.
+- Opt-in only: do not deploy unless you want this HTTP surface.
+- Requires `Authorization: Bearer <user-jwt>`.
+- Expects JSON body with `invite_code`.
+
+Example request:
+```bash
+curl --request POST \
+  'https://<project>.supabase.co/functions/v1/invite' \
+  --header 'Content-Type: application/json' \
+  --header 'Authorization: Bearer <user-jwt>' \
+  --data '{"invite_code":"<invite-id>"}'
+```
+
+### `add-member` example (`supabase/functions/add-member/index.ts`)
+
+- Purpose: demonstrate a server-side HTTP wrapper around `rbac.add_member(...)` using `service_role`.
+- Opt-in only: do not deploy unless you want this HTTP surface.
+- Default auth behavior in the example:
+  - Requires `Authorization: Bearer <user-jwt>`
+  - Allows callers with `app_metadata.is_super_admin = true`
+  - Optionally allows callers whose app role is listed in `ADD_MEMBER_ALLOWED_APP_ROLES` (CSV)
+  - If `ADD_MEMBER_ALLOWED_APP_ROLES` is unset, there are no role-based approvals.
+- Requires `examples/setup/create_service_role_wrapper.sql` (or equivalent) so PostgREST can resolve `public.add_member(...)` with service-role-only EXECUTE.
 
 ---
 

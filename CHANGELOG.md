@@ -1,5 +1,23 @@
 # Changelog
 
+## 5.1.1
+
+### Bug Fixes
+
+- **`db_pre_request()` now grants EXECUTE to `authenticated` and `anon`** — PostgREST calls `db_pre_request` after `SET LOCAL ROLE`, so the function runs as the switched role (`authenticated`/`anon`/`service_role`), not `authenticator`. In 5.1.0, only `authenticator` and `service_role` had EXECUTE, so all PostgREST requests from logged-in users on hosted Supabase failed with "permission denied for function db_pre_request". Local dev was unaffected because tests run as `postgres` (superuser), which bypasses privilege checks.
+- **`db_pre_request()` now short-circuits for `anon` and NULL `auth.uid()`** — skips the `user_claims` SELECT entirely, since `anon` lacks SELECT on that table and would never have claims. Uses a `current_user = 'anon'` check as defense-in-depth against crafted JWTs where `auth.uid()` might return non-NULL for anon.
+- **`add-member` edge function example hardened** — remains optional/opt-in, but now denies unauthorized callers by default, supports explicit caller authorization via JWT + app metadata checks, and documents that role-based approvals are only enabled when `ADD_MEMBER_ALLOWED_APP_ROLES` is configured.
+
+### Tests
+
+- **New test file `26_db_pre_request_privileges.test.sql`** (16 tests) — verifies EXECUTE privileges for all PostgREST roles, behavioral correctness with actual `SET LOCAL ROLE` switching, security invariants (anon can't read tables, authenticated can't write claims), and scope isolation (caller only sees own claims).
+
+### Upgrade from 5.1.0
+
+Apply the `supabase_rbac--5.1.0--5.1.1.sql` upgrade script, or for fresh installs use `supabase_rbac--5.1.1.sql`.
+
+---
+
 ## 5.1.0
 
 ### New Features

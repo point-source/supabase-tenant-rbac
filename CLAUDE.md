@@ -2,12 +2,12 @@
 
 ## What This Project Is
 
-A PostgreSQL TLE (Trusted Language Extension) that provides multi-tenant RBAC for Supabase projects. Distributed via [database.dev](https://database.dev/pointsource/supabase_rbac) as `pointsource-supabase_rbac`. Current version: **5.1.0**.
+A PostgreSQL TLE (Trusted Language Extension) that provides multi-tenant RBAC for Supabase projects. Distributed via [database.dev](https://database.dev/pointsource/supabase_rbac) as `pointsource-supabase_rbac`. Current version: **5.1.1**.
 
 ## Repository Layout
 
 ```
-supabase_rbac--5.1.0.sql       # Current extension full install script (READ THIS FIRST)
+supabase_rbac--5.1.1.sql       # Current extension full install script (READ THIS FIRST)
 supabase_rbac--X.Y.Z.sql       # Prior version install scripts (keep for reference)
 supabase_rbac.control          # Extension metadata (default_version lives here)
 CHANGELOG.md                   # Version history
@@ -90,7 +90,7 @@ supabase test db
 
 When making changes to the core extension:
 
-1. Edit `supabase_rbac--5.1.0.sql` (or create a new version file)
+1. Edit `supabase_rbac--5.1.1.sql` (or create a new version file)
 2. **CRITICAL: Run `tools/generate_migration.sh` immediately after any edit** — the install migration embeds the full extension SQL. Without regeneration, `supabase db reset` uses stale code.
 3. Create `supabase_rbac--<old>--<new>.sql` — upgrade path (ALTER/REPLACE only changed objects)
 4. Update `default_version` in `supabase_rbac.control`

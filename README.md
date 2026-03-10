@@ -108,6 +108,18 @@ examples/
     remove_public_wrappers.sql — Remove those wrappers
 ```
 
+### Optional Edge Function Examples
+
+The repo includes opt-in edge function examples under `supabase/functions/`:
+
+- `invite/` — HTTP wrapper for `accept_invite`
+- `add-member/` — server-side `add_member` wrapper using `service_role`
+
+These are optional and not required to use the extension's SQL API.
+
+For setup/auth details, see the "Optional Edge Function Examples" section in [docs/API_REFERENCE.md](docs/API_REFERENCE.md).  
+If you deploy `add-member`, run `examples/setup/create_service_role_wrapper.sql` so `public.add_member` is exposed to PostgREST with service-role-only EXECUTE.
+
 ## Local Development
 
 ```bash
