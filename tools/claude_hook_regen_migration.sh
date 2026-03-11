@@ -20,5 +20,5 @@ except Exception:
 # Only regenerate for extension SQL files and the control file
 if echo "$FILE_PATH" | grep -qE 'supabase_rbac(--[0-9.]+)?\.sql$|supabase_rbac\.control$'; then
     REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-    "$REPO_ROOT/tools/generate_migration.sh"
+    "$REPO_ROOT/tools/install.sh"
 fi

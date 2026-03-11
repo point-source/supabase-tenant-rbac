@@ -1,5 +1,26 @@
 # Changelog
 
+## 5.2.0
+
+### New Features
+
+- **Plain SQL installation — no pg_tle dependency.** The extension now installs as plain SQL, resolving long-standing issues with `pg_dump`, `supabase db diff`, `supabase db pull`, and logical backup/restore ([#23](https://github.com/point-source/supabase-tenant-rbac/issues/23), [#41](https://github.com/point-source/supabase-tenant-rbac/issues/41)).
+- **One-line installer.** `curl -sL .../tools/install.sh | bash` generates a timestamped migration in the user's project. Supports `--schema`, `--version`, `--from` (upgrade), and `--output-dir` options.
+- **Upgrade migration generation.** `tools/install.sh --from X.Y.Z` chains upgrade path files into a single plain SQL migration.
+- **`rbac._version()` function** returns the installed version string. Auto-appended by the install/generate tools — not present in source SQL files, which remain TLE-compatible.
+- **`VERSIONS` manifest** in the repo root tracks the latest version and upgrade edges for the installer.
+
+### Migration from 5.1.1
+
+No schema or behavioral changes. The extension SQL is identical — only the installation mechanism changed. To migrate from a TLE-based install:
+
+1. The TLE-installed objects and plain SQL objects are functionally identical. If your existing install works, no action is needed.
+2. For new installs or resets, use `tools/install.sh` to generate a plain SQL migration.
+3. The `pg_tle` prerequisite migration is now a no-op.
+4. **Do not mix installation methods for upgrades.** If you installed via dbdev/pg_tle, continue upgrading via dbdev. If you installed via plain SQL, continue upgrading via plain SQL. Mixing methods leaves the database in an inconsistent state.
+
+---
+
 ## 5.1.1
 
 ### Bug Fixes

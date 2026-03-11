@@ -1,0 +1,11 @@
+-- Upgrade path: 5.1.1 → 5.2.0
+-- No schema or behavioral changes. This version switches from TLE-based
+-- installation to plain SQL migrations. The extension SQL is identical.
+--
+-- The _version() function is appended automatically by tools/install.sh.
+--
+-- DATA SAFETY REVIEW:
+--   Schema changes: none — this file contains no SQL statements.
+--   Behavioral changes: none — the extension SQL is identical to 5.1.1.
+--   Data loss risk: none — no tables, columns, constraints, functions, or
+--     permissions are created, altered, or dropped.

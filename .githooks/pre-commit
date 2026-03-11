@@ -12,7 +12,7 @@ CHANGED=$(git diff --cached --name-only)
 
 if echo "$CHANGED" | grep -qE '^supabase_rbac(--[0-9.]+)?\.sql$|^supabase_rbac\.control$'; then
     echo "Extension files changed — regenerating install_rbac migration..."
-    "$REPO_ROOT/tools/generate_migration.sh"
+    "$REPO_ROOT/tools/install.sh"
     git add "$REPO_ROOT/supabase/migrations/20240502214828_install_rbac.sql"
     echo "Migration regenerated and staged."
 fi

@@ -1,8 +1,8 @@
 # Supabase Tenant RBAC
 
-Multi-tenant, role-based access control for Supabase. Distributed as a PostgreSQL TLE via [database.dev](https://database.dev/pointsource/supabase_rbac).
+Multi-tenant, role-based access control for Supabase.
 
-**Current version: 5.0.0**
+**Current version: 5.2.0**
 
 ## What Is This?
 
@@ -15,28 +15,72 @@ A PostgreSQL extension that gives your Supabase project:
 
 ## Install
 
-**Prerequisite**: `pg_tle` must be enabled in your Supabase project.
+From your Supabase project directory:
 
-**1. Install the dbdev CLI** ([other platforms](https://database.dev/docs/cli)):
 ```bash
-brew install supabase/tap/dbdev
+curl -sL https://raw.githubusercontent.com/point-source/supabase-tenant-rbac/main/tools/install.sh | bash
 ```
 
-**2. Generate an install migration:**
-```bash
-dbdev add -o "./supabase/migrations/" -v 5.0.0 -s rbac package -n pointsource@supabase_rbac
-```
+This creates a timestamped migration file in `supabase/migrations/`. Then apply it:
 
-**3. Apply the migration:**
 ```bash
 supabase migration up
-# or
-supabase db reset
+# or: supabase db reset
 ```
 
 Then add RLS policies. See [Quickstart](#quickstart).
 
-> **Note:** Supabase logical backups may fail to restore TLE extensions if `auth.users` isn't available at restore time. See [Issue #41](https://github.com/point-source/supabase-tenant-rbac/issues/41).
+### Options
+
+```bash
+# Use a custom schema name (default: rbac)
+curl -sL .../tools/install.sh | bash -s -- --schema my_rbac
+
+# Install a specific version
+curl -sL .../tools/install.sh | bash -s -- --version 5.2.0
+
+# Upgrade from a previous version
+curl -sL .../tools/install.sh | bash -s -- --from 5.0.0
+
+# Custom output directory
+curl -sL .../tools/install.sh | bash -s -- --output-dir ./migrations
+
+# Preview without writing
+curl -sL .../tools/install.sh | bash -s -- --dry-run
+```
+
+> In the examples above, `...` is shorthand for `https://raw.githubusercontent.com/point-source/supabase-tenant-rbac/main`.
+
+### Alternative: dbdev
+
+If you prefer using the [dbdev](https://database.dev) package manager:
+
+**Prerequisite:** `pg_tle` must be enabled in your Supabase project.
+
+```bash
+# Install
+dbdev add -o "./supabase/migrations/" -s rbac package -n pointsource@supabase_rbac
+
+# Upgrade (generates a new migration with the update)
+dbdev add -o "./supabase/migrations/" -s rbac package -n pointsource@supabase_rbac
+```
+
+Then apply with `supabase migration up` or `supabase db reset`.
+
+**Known limitations:** dbdev installs via pg_tle, which registers objects as extension members. This causes `pg_dump`, `supabase db diff`, `supabase db pull`, and logical backup/restore to miss RBAC objects ([#23](https://github.com/point-source/supabase-tenant-rbac/issues/23), [#41](https://github.com/point-source/supabase-tenant-rbac/issues/41)). The curl installer above avoids these issues by generating plain SQL.
+
+> **Do not mix installation methods.** If you installed via dbdev, continue upgrading via dbdev. If you installed via the curl installer or plain SQL, continue upgrading that way. Mixing methods leaves the database in an inconsistent state. To switch from dbdev to plain SQL, perform a fresh plain SQL install on a new database and migrate your data.
+
+### Alternative: manual
+
+Clone the repo and generate a migration directly:
+
+```bash
+git clone https://github.com/point-source/supabase-tenant-rbac.git
+cd supabase-tenant-rbac
+tools/install.sh
+# Copy supabase/migrations/20240502214828_install_rbac.sql into your project
+```
 
 ## Quickstart
 

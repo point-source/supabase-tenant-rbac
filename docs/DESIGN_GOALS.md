@@ -35,8 +35,9 @@
    - [Global Roles and Permissions](#global-roles-and-permissions)
    - [Future: Per-Group Custom Roles](#future-per-group-custom-roles)
 6. [Distribution & Installation](#distribution--installation)
-   - [Primary: dbdev Migrations](#primary-dbdev-migrations)
-   - [Secondary: Manual SQL Migrations](#secondary-manual-sql-migrations)
+   - [Primary: Plain SQL Migrations](#primary-plain-sql-migrations)
+   - [Upgrade Migrations](#upgrade-migrations)
+   - [Source File Compatibility](#source-file-compatibility)
    - [Upgrade Path from v4.x](#upgrade-path-from-v4x)
 7. [Documentation Plan](#documentation-plan)
    - [Document Structure](#document-structure)
@@ -54,7 +55,7 @@
 
 ### Product Overview
 
-Supabase Tenant RBAC is a PostgreSQL TLE (Trusted Language Extension) that provides role-based access control for single- and multi-tenant Supabase projects. It allows application authors to define groups (tenants/organizations), roles, and permissions, and provides the machinery for managing membership, enforcing access policies via RLS, and keeping authorization state fresh across all request types.
+Supabase Tenant RBAC is a PostgreSQL extension that provides role-based access control for single- and multi-tenant Supabase projects. It installs as plain SQL with no pg_tle dependency. It allows application authors to define groups (tenants/organizations), roles, and permissions, and provides the machinery for managing membership, enforcing access policies via RLS, and keeping authorization state fresh across all request types.
 
 ### Target Audience
 
@@ -317,7 +318,7 @@ Supabase Storage bypasses `db_pre_request`. The `get_claims()` function falls ba
 ### Known Limitations & Documented Risks
 
 - **No automated upgrade from v4.x.** Migration requires data export, extension drop, reinstall, and re-import.
-- **Supabase logical backups** may not correctly restore the extension due to dependency ordering on `auth.users`. This is an upstream platform issue.
+- **Supabase logical backups** may have issues if `auth.users` is not available at restore time (FK dependencies). This is a general Supabase concern, not specific to this extension.
 - **Role definitions are global, not per-group.** All groups share the same role vocabulary. Per-group custom roles are a future enhancement.
 - **Permission strings are opaque.** The extension does not interpret dot-notation or hierarchies in permission strings — `group_data.read` and `group_data.*` are treated as independent strings.
 
@@ -368,13 +369,22 @@ Supabase Storage bypasses `db_pre_request`. The `get_claims()` function falls ba
 
 ## Distribution & Installation
 
-### Primary: dbdev Migrations
+### Primary: Plain SQL Migrations
 
-dbdev now generates migrations for users outside the database. v5 targets this as the primary installation method. Users run `dbdev.install()` and create the extension in a dedicated schema.
+The extension installs as plain SQL — no pg_tle or dbdev dependency. Users generate a migration using `tools/install.sh` (which replaces `@extschema@` with `rbac` and appends a `_version()` tracking function) or manually copy and adapt the versioned SQL file.
 
-### Secondary: Manual SQL Migrations
+This approach ensures full compatibility with standard PostgreSQL tooling: `pg_dump`, `supabase db diff`, `supabase db pull`, and migration squashing all work normally since objects are regular schema objects, not extension members.
 
-For users who prefer direct SQL, the versioned `.sql` files in the repository serve as standalone migrations.
+### Upgrade Migrations
+
+Upgrade path files (`supabase_rbac--X.Y.Z--A.B.C.sql`) are chained by the generate tool:
+```bash
+tools/install.sh --from 5.0.0 -o supabase/migrations/<timestamp>_upgrade_rbac.sql
+```
+
+### Source File Compatibility
+
+Source SQL files still use `@extschema@` for portability. The generate tool handles substitution. This means the same source files could theoretically be published to dbdev/pg_tle if desired, though that installation path is no longer the primary recommendation.
 
 ### Upgrade Path from v4.x
 
