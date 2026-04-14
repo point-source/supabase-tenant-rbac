@@ -136,6 +136,7 @@ CREATE OR REPLACE FUNCTION ${SCHEMA}._version()
 RETURNS text
 LANGUAGE sql
 IMMUTABLE
+SET search_path = ''
 AS \$function\$
     SELECT '${VERSION}'::text;
 \$function\$;

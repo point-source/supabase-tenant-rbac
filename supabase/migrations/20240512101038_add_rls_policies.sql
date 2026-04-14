@@ -23,7 +23,7 @@ using (rbac.is_member(id));
 -- This policy allows any authenticated user to create groups (adjust for your app).
 create policy "Authenticated users can create groups"
 on rbac.groups as permissive for insert
-to authenticated with check (true);
+to authenticated with check ((select auth.uid()) is not null);
 
 create policy "Has update permission"
 on rbac.groups
@@ -71,7 +71,7 @@ for delete
 to authenticated
 using (
     rbac.has_permission(group_id, 'members.manage'::text)
-    OR user_id = auth.uid()
+    OR user_id = (select auth.uid())
 );
 
 -- ── invites ─────────────────────────────────────────────────────────────────
@@ -169,4 +169,4 @@ on rbac.user_claims
 as permissive
 for select
 to authenticated
-using (user_id = auth.uid());
+using (user_id = (select auth.uid()));

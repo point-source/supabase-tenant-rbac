@@ -47,7 +47,7 @@ CREATE POLICY "Owners can delete their groups"
 -- Omit it entirely in single-tenant apps to prevent users from creating new groups.
 CREATE POLICY "Authenticated users can create groups"
     ON rbac.groups FOR INSERT TO authenticated
-    WITH CHECK (true);
+    WITH CHECK ((select auth.uid()) IS NOT NULL);
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- rbac.members
@@ -78,7 +78,7 @@ CREATE POLICY "Owners can remove members or self-remove"
     TO authenticated
     USING (
         rbac.has_role(group_id, 'owner')
-        OR user_id = auth.uid()
+        OR user_id = (select auth.uid())
     );
 
 -- ─────────────────────────────────────────────────────────────────────────
@@ -199,4 +199,4 @@ CREATE POLICY "service_role has full access to claims"
 CREATE POLICY "Users can read own claims"
     ON rbac.user_claims FOR SELECT
     TO authenticated
-    USING (user_id = auth.uid());
+    USING (user_id = (select auth.uid()));

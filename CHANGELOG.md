@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.2.1
+
+### Bug Fixes
+
+- **Covering indexes for `rbac.invites` foreign keys.** `invites_invited_by_fkey` and `invites_user_id_fkey` previously had no covering index, causing seq scans on `auth.users` cascade deletes and tripping the Supabase `unindexed_foreign_keys` linter. Adds `invites_invited_by_idx` and `invites_user_id_idx`.
+- **`_version()` search_path locked.** The auto-generated `_version()` now includes `SET search_path = ''`, resolving the Supabase `function_search_path_mutable` linter warning.
+
+### Upgrade from 5.2.0
+
+Apply `supabase_rbac--5.2.0--5.2.1.sql`, or for fresh installs use `supabase_rbac--5.2.1.sql`. Indexes are created with `IF NOT EXISTS` and do not block concurrent workloads on small tables.
+
+---
+
 ## 5.2.0
 
 ### New Features

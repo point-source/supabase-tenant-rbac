@@ -67,12 +67,22 @@ truncate on table "public"."sensitive_data" to "service_role";
 grant
 update on table "public"."sensitive_data" to "service_role";
 
-create policy "Has data write permission" on "sensitive_data" as permissive for all to authenticated using (
-    rbac.has_permission (owned_by_group, 'data.write'::text)
-)
-with check (
-    rbac.has_permission (owned_by_group, 'data.write'::text)
-);
+-- Write policies are split per-command (INSERT/UPDATE/DELETE) instead of FOR ALL
+-- so SELECT has exactly one permissive policy — "Allow group member to read".
+-- This avoids the Supabase `multiple_permissive_policies` linter warning.
+
+create policy "Has data write insert" on "sensitive_data" as permissive for insert
+    to authenticated
+    with check (rbac.has_permission (owned_by_group, 'data.write'::text));
+
+create policy "Has data write update" on "sensitive_data" as permissive for update
+    to authenticated
+    using (rbac.has_permission (owned_by_group, 'data.write'::text))
+    with check (rbac.has_permission (owned_by_group, 'data.write'::text));
+
+create policy "Has data write delete" on "sensitive_data" as permissive for delete
+    to authenticated
+    using (rbac.has_permission (owned_by_group, 'data.write'::text));
 
 create policy "Allow group member to read" on "sensitive_data" as permissive for
 select

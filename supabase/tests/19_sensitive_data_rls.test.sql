@@ -75,8 +75,8 @@ SELECT is(
 RESET ROLE;
 
 -- ── SD-03: alice (viewer, data.read only) cannot INSERT into sensitive_data ────
--- alice has data.read but not data.write; the "Has data write permission" policy
--- blocks INSERT/UPDATE. Expect an RLS error.
+-- alice has data.read but not data.write; the "Has data write insert"/update/delete
+-- policies block mutations. Expect an RLS error.
 DO $$
 DECLARE v_raised boolean := false;
 BEGIN
