@@ -37,7 +37,7 @@ Then add RLS policies. See [Quickstart](#quickstart).
 curl -sL .../tools/install.sh | bash -s -- --schema my_rbac
 
 # Install a specific version
-curl -sL .../tools/install.sh | bash -s -- --version 5.2.0
+curl -sL .../tools/install.sh | bash -s -- --version 5.2.1
 
 # Upgrade from a previous version
 curl -sL .../tools/install.sh | bash -s -- --from 5.0.0
@@ -50,6 +50,46 @@ curl -sL .../tools/install.sh | bash -s -- --dry-run
 ```
 
 > In the examples above, `...` is shorthand for `https://raw.githubusercontent.com/point-source/supabase-tenant-rbac/main`.
+
+## Upgrading
+
+To upgrade an existing plain SQL installation to the latest version:
+
+```bash
+curl -sL https://raw.githubusercontent.com/point-source/supabase-tenant-rbac/main/tools/install.sh \
+  | bash -s -- --from <your-current-version>
+```
+
+For example, upgrading from 5.1.0:
+
+```bash
+curl -sL .../tools/install.sh | bash -s -- --from 5.1.0
+```
+
+This generates a single migration that chains all intermediate upgrade steps (e.g. 5.1.0 → 5.1.1 → 5.2.0 → 5.2.1). Then apply it:
+
+```bash
+supabase migration up
+```
+
+**What happens during an upgrade:**
+- Only changed objects (new indexes, altered functions, etc.) are applied — existing data is preserved.
+- The `rbac._version()` function is replaced with the target version so you can verify the installed version after upgrading.
+- Each upgrade step is idempotent where possible (e.g. `CREATE INDEX IF NOT EXISTS`).
+
+**Check your current version:**
+```sql
+SELECT rbac._version();
+```
+
+**Preview before applying:**
+```bash
+curl -sL .../tools/install.sh | bash -s -- --from 5.1.0 --dry-run
+```
+
+> In the examples above, `...` is shorthand for `https://raw.githubusercontent.com/point-source/supabase-tenant-rbac/main`.
+
+For upgrading from v4.x (which requires a manual data migration), see the [Migration Guide](docs/MIGRATION_GUIDE.md).
 
 ### Alternative: dbdev
 

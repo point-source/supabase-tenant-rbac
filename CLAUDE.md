@@ -2,12 +2,12 @@
 
 ## What This Project Is
 
-A PostgreSQL extension that provides multi-tenant RBAC for Supabase projects. Installs as plain SQL (no pg_tle dependency). Current version: **5.2.0**.
+A PostgreSQL extension that provides multi-tenant RBAC for Supabase projects. Installs as plain SQL (no pg_tle dependency). Current version: **5.2.1**.
 
 ## Repository Layout
 
 ```
-supabase_rbac--5.2.0.sql       # Current extension full install script (READ THIS FIRST)
+supabase_rbac--5.2.1.sql       # Current extension full install script (READ THIS FIRST)
 supabase_rbac--X.Y.Z.sql       # Prior version install scripts (keep for reference)
 supabase_rbac.control          # Extension metadata (default_version lives here)
 VERSIONS                       # Version manifest for tools/install.sh (latest + upgrade edges)
@@ -90,7 +90,7 @@ supabase test db
 
 When making changes to the core extension:
 
-1. Edit `supabase_rbac--5.2.0.sql` (or create a new version file)
+1. Edit `supabase_rbac--5.2.1.sql` (or create a new version file)
 2. **CRITICAL: Run `tools/install.sh` immediately after any edit** — the install migration embeds the full extension SQL with `@extschema@` replaced by `rbac`. Without regeneration, `supabase db reset` uses stale code.
 3. Create `supabase_rbac--<old>--<new>.sql` — upgrade path (ALTER/REPLACE only changed objects). Source files still use `@extschema@` for TLE compatibility; the tool handles substitution.
 4. Update `default_version` in `supabase_rbac.control`
