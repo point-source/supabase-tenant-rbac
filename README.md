@@ -2,7 +2,7 @@
 
 Multi-tenant, role-based access control for Supabase.
 
-**Current version: 5.2.0**
+**Current version: 5.2.1**
 
 ## What Is This?
 
